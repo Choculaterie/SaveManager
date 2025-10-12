@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "savemanager",
+  "version": "${version}",
+  "name": "Save Manager",
+  "description": "A mod for managing and syncing Minecraft world saves with cloud storage",
+  "authors": [
+    "Choculaterie"
+  ],
+  "contact": {
+    "homepage": "https://github.com/Choculaterie/SaveManager",
+    "sources": "https://github.com/Choculaterie/SaveManager"
+  },
+  "license": "MIT",
+  "icon": "assets/savemanager/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "main": [
+      "com.choculaterie.SaveManagerMod"
+    ],
+    "client": [
+      "com.choculaterie.SaveManagerClient"
+    ]
+  },
+  "mixins": [
+    "savemanager.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.17.2",
+    "minecraft": "~1.21.10",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

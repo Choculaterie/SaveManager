@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.choculaterie.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "SinglePlayerScreenMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
