@@ -46,6 +46,28 @@ public class CloudSaveManagerScreen extends Screen {
     // Selection (global index in `saves`, -1 means none)
     private int selectedIndex = -1;
 
+    private volatile long dlDownloaded = 0L;
+    private volatile long dlTotal = -1L;
+    private volatile boolean dlActive = false;
+    private volatile long dlStartNanos = 0L;
+    private volatile long dlLastTickNanos = 0L;
+    private volatile long dlLastBytes = 0L;
+    private volatile double dlSpeedBps = 0.0;
+    private volatile boolean unzipActive = false;
+
+    private static final ActiveOp ACTIVE = new ActiveOp();
+    private static final class ActiveOp {
+        volatile boolean dlActive = false;
+        volatile boolean unzipActive = false;
+        volatile long downloaded = 0L;
+        volatile long total = -1L;
+        volatile long lastBytes = 0L;
+        volatile long lastTickNanos = 0L;
+        volatile long startNanos = 0L;
+        volatile double speedBps = 0.0;
+    }
+    private static boolean sm$isOpActive() { return ACTIVE.dlActive || ACTIVE.unzipActive; }
+
     private static final long QUOTA_LIMIT_BYTES = 5L * 1024L * 1024L * 1024L; // 5 GB
 
     // Invisible click areas for rows
@@ -141,6 +163,25 @@ public class CloudSaveManagerScreen extends Screen {
         SaveManagerMod.LOGGER.info("CloudSaveManager: fetchList() start");
 
         networkManager.listWorldSaves().whenComplete((json, err) -> {
+            // Log API response for debugging (pretty-print and truncate large payloads)
+            if (json != null) {
+                try {
+                    String pretty = new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(json);
+                    if (pretty.length() > 2000) {
+                        SaveManagerMod.LOGGER.info("CloudSaveManager: list response (truncated, totalLen={}) : {}",
+                                pretty.length(), pretty.substring(0, 2000) + "...(truncated)");
+                    } else {
+                        SaveManagerMod.LOGGER.info("CloudSaveManager: list response: {}", pretty);
+                    }
+                } catch (Throwable logEx) {
+                    try {
+                        SaveManagerMod.LOGGER.info("CloudSaveManager: list response (raw): {}", json.toString());
+                    } catch (Throwable ignored) {}
+                }
+            } else {
+                SaveManagerMod.LOGGER.info("CloudSaveManager: list response is null");
+            }
+
             if (err != null) {
                 SaveManagerMod.LOGGER.error("CloudSaveManager: list failed", err);
                 runOnClient(() -> {
@@ -387,14 +428,13 @@ public class CloudSaveManagerScreen extends Screen {
     }
 
     private void updateActionButtons() {
-        boolean enabled = getSelected() != null && !loading;
+        boolean enabled = getSelected() != null && !loading && !sm$isOpActive();
         if (downloadBtn != null) downloadBtn.active = enabled;
         if (deleteBtn != null) deleteBtn.active = enabled;
     }
 
     // Build invisible pressable boxes over each visible row (avoids overriding mouseClicked API)
     private void buildRowHitBoxes() {
-        // Remove previous hitboxes from the screen
         for (var w : rowHitBoxes) {
             try { this.remove(w); } catch (Throwable ignored) {}
         }
@@ -410,11 +450,12 @@ public class CloudSaveManagerScreen extends Screen {
 
             ButtonWidget hit = ButtonWidget.builder(Text.literal(""), b -> {
                 selectedIndex = globalIndex;
-                status = "";
+                if (!loading && !sm$isOpActive()) {
+                    status = "";
+                }
                 updateActionButtons();
             }).dimensions(g.listX, ry - 4, g.listW, g.rowHeight).build();
 
-            // Invisible but interactive
             try { hit.setAlpha(0.0f); } catch (Throwable ignored) {}
             hit.visible = true;
             hit.active = true;
@@ -454,13 +495,12 @@ public class CloudSaveManagerScreen extends Screen {
 
     private void onDownload(SaveItem s) {
         loading = true;
-        status = "Downloading...";
+        status = "Preparing...";
         updateActionButtons();
 
         Path savesDir = this.client.runDirectory.toPath().resolve("saves");
         try { Files.createDirectories(savesDir); } catch (Exception ignored) {}
 
-        // Download zip to a temp dir
         Path tmpDir;
         try {
             tmpDir = Files.createTempDirectory("savemanager-dl-");
@@ -472,7 +512,41 @@ public class CloudSaveManagerScreen extends Screen {
             return;
         }
 
-        networkManager.downloadWorldSave(s.id, tmpDir).whenComplete((zipPath, err) -> {
+        // Init global op state
+        ACTIVE.dlActive = true;
+        ACTIVE.unzipActive = false;
+        ACTIVE.downloaded = 0L;
+        ACTIVE.total = -1L;
+        ACTIVE.startNanos = System.nanoTime();
+        ACTIVE.lastTickNanos = ACTIVE.startNanos;
+        ACTIVE.lastBytes = 0L;
+        ACTIVE.speedBps = 0.0;
+
+        final long fallbackTotal = (s != null && s.fileSizeBytes > 0) ? s.fileSizeBytes : -1L;
+
+        networkManager.downloadWorldSave(s.id, tmpDir, (downloaded, total) -> {
+            long effTotal = (total > 0) ? total : fallbackTotal;
+
+            // Update global progress
+            ACTIVE.downloaded = Math.max(0L, downloaded);
+            if (effTotal > 0) ACTIVE.total = effTotal;
+
+            long now = System.nanoTime();
+            long dtNs = now - ACTIVE.lastTickNanos;
+            long dBytes = ACTIVE.downloaded - ACTIVE.lastBytes;
+            if (dtNs > 50_000_000L) {
+                double instBps = dBytes > 0 ? (dBytes * 1_000_000_000.0) / dtNs : 0.0;
+                double alpha = 0.2;
+                ACTIVE.speedBps = ACTIVE.speedBps <= 0 ? instBps : (alpha * instBps + (1 - alpha) * ACTIVE.speedBps);
+                ACTIVE.lastTickNanos = now;
+                ACTIVE.lastBytes = ACTIVE.downloaded;
+            }
+
+            // UI update only (status text is computed dynamically in render)
+            runOnClient(this::updateActionButtons);
+        }).whenComplete((zipPath, err) -> {
+            ACTIVE.dlActive = false;
+
             if (err != null) {
                 SaveManagerMod.LOGGER.error("CloudSaveManager: download failed", err);
                 runOnClient(() -> {
@@ -483,27 +557,33 @@ public class CloudSaveManagerScreen extends Screen {
                 return;
             }
 
+            // Unzipping phase (persisted)
+            runOnClient(() -> {
+                ACTIVE.unzipActive = true;
+                status = "Unzipping...";
+            });
+
             String baseName = sanitizeFolderName(s.worldName);
             if (baseName.isEmpty()) baseName = stripExtSafe(zipPath.getFileName().toString(), "world");
             Path targetBase = ensureUniqueDir(savesDir, baseName);
 
-            String finalMsg;
+            String tmpEndMsg = ""; // empty means success
             try {
                 Files.createDirectories(targetBase);
                 unzipSmart(zipPath, targetBase);
-                finalMsg = "Downloaded to saves/" + targetBase.getFileName();
             } catch (Exception ex) {
                 SaveManagerMod.LOGGER.error("CloudSaveManager: unzip failed", ex);
-                finalMsg = "Unzip failed";
+                tmpEndMsg = "Unzip failed";
             } finally {
                 try { Files.deleteIfExists(zipPath); } catch (Exception ignored) {}
                 try { Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
             }
 
-            String msg = finalMsg;
+            final String endMsg = tmpEndMsg;
             runOnClient(() -> {
-                status = msg;
-                loading = false;
+                ACTIVE.unzipActive = false;
+                status = endMsg;  // "" on success
+                loading = false;  // unlock actions
                 updateActionButtons();
             });
         });
@@ -594,23 +674,11 @@ public class CloudSaveManagerScreen extends Screen {
         try { ctx.disableScissor(); } catch (Throwable ignored) {}
 
         int cx = this.width / 2;
-        int top = this.height / 4;
 
-        // Title and quota (quota line directly under the title, in grey)
         ctx.drawCenteredTextWithShadow(this.textRenderer, this.title, cx, 10, 0xFFFFFFFF);
         ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(sm$quotaLineComputed()), cx, 22, 0xFFAAAAAA);
 
-        // Columns
-        int left = cx - 220;
-        int headerY = top + 10;
-        drawColText(ctx, "World", left, headerY, 0xFFFFFFFF);
-        drawColText(ctx, "Size", left + 220, headerY, 0xFFFFFFFF);
-        drawColText(ctx, "Created", left + 300, headerY, 0xFFFFFFFF);
-        drawColText(ctx, "Updated", left + 420, headerY, 0xFFFFFFFF);
-
         Geometry g = computeGeometry();
-
-        // Clip rows
         ctx.enableScissor(g.listX, g.listY, g.listX + g.listW, g.listY + g.listH);
 
         int start = currentPage * PAGE_SIZE;
@@ -619,7 +687,6 @@ public class CloudSaveManagerScreen extends Screen {
             SaveItem s = saves.get(i);
             int ry = g.rowStartY + (i - start) * g.rowHeight;
 
-            // Selection highlight
             if (i == selectedIndex) {
                 int h = Math.max(1, g.rowHeight - 4);
                 int x1 = g.listX;
@@ -627,23 +694,92 @@ public class CloudSaveManagerScreen extends Screen {
                 ctx.fill(x1, ry - 4, x2, ry - 1 + h, 0x66FFFFFF);
             }
 
+            int left = cx - 220;
             drawColText(ctx, safe(s.worldName), left, ry, 0xFFDDDDDD);
             drawColText(ctx, formatBytes(s.fileSizeBytes), left + 220, ry, 0xFFDDDDDD);
             drawColText(ctx, shortDate(s.createdAt), left + 300, ry, 0xFFDDDDDD);
             drawColText(ctx, shortDate(s.updatedAt), left + 420, ry, 0xFFDDDDDD);
 
-            // Separator
             ctx.fill(g.listX, ry + g.rowHeight - 5, g.listX + g.listW - 10, ry + g.rowHeight - 4, 0x22FFFFFF);
         }
 
         ctx.disableScissor();
 
-        // Status line
-        if (loading || !status.isEmpty()) {
-            ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(status), cx, this.height - 46, 0xFFFFFFFF);
+        // Read global op state
+        boolean opActive = sm$isOpActive();
+        boolean unzipActiveV = ACTIVE.unzipActive;
+        long dlDownloadedV = ACTIVE.downloaded;
+        long dlTotalV = ACTIVE.total;
+        double speedV = ACTIVE.speedBps;
+
+        int baseStatusY = this.height - 56;
+        int statusY = opActive ? baseStatusY - 16 : baseStatusY;
+
+        // Dynamic status based on active phase; fall back to stored status if idle
+        String displayStatus = status;
+        if (opActive) {
+            displayStatus = unzipActiveV ? "Unzipping..." : (dlDownloadedV <= 0L ? "Preparing..." : "");
         }
 
-        // Keep states fresh
+        if (loading || (displayStatus != null && !displayStatus.isEmpty())) {
+            ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(displayStatus), cx, statusY, 0xFFFFFFFF);
+        }
+
+        if (opActive) {
+            if (unzipActiveV || dlDownloadedV <= 0L) {
+                // Spinner (light gray)
+                int radius = 8;
+                int dots = 12;
+                int cx0 = this.width / 2;
+                int cy0 = statusY + 24;
+                long t = System.currentTimeMillis();
+                int head = (int)((t / 100) % dots);
+                for (int i = 0; i < dots; i++) {
+                    double ang = (2 * Math.PI * i) / dots;
+                    int dx = (int)Math.round(Math.cos(ang) * radius);
+                    int dy = (int)Math.round(Math.sin(ang) * radius);
+                    int x = cx0 + dx;
+                    int y = cy0 + dy;
+                    int dist = (i - head + dots) % dots;
+                    int alpha = switch (dist) {
+                        case 0 -> 0xFF;
+                        case 1 -> 0xCC;
+                        case 2 -> 0x99;
+                        case 3 -> 0x66;
+                        default -> 0x33;
+                    };
+                    int col = (alpha << 24) | 0xCCCCCC; // light gray dots
+                    ctx.fill(x - 1, y - 1, x + 2, y + 2, col);
+                }
+            } else {
+                // Light gray download bar
+                int barW = 360;
+                int barH = 8;
+                int bx = cx - (barW / 2);
+                int by = statusY + 14;
+
+                ctx.fill(bx, by, bx + barW, by + barH, 0xFF444444);
+
+                double frac = (dlTotalV > 0) ? Math.min(1.0, (double) dlDownloadedV / dlTotalV) : 0.0;
+                int filled = (int) (barW * frac);
+                ctx.fill(bx, by, bx + filled, by + barH, 0xFFCCCCCC);
+
+                if (dlTotalV > 0) {
+                    int pct = (int) Math.min(100, Math.floor((dlDownloadedV * 100.0) / dlTotalV));
+                    ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(pct + "%"), cx, by - 10, 0xFFFFFFFF);
+
+                    String info = formatBytes(dlDownloadedV) + " / " + formatBytes(dlTotalV);
+                    if (speedV > 1) {
+                        String sp = formatBytes((long) speedV) + "/s";
+                        long remaining = Math.max(0L, dlTotalV - dlDownloadedV);
+                        long etaSec = Math.max(0L, (long) Math.ceil(remaining / Math.max(1.0, speedV)));
+                        info += " • " + sp + " • ETA " + formatDurationShort(etaSec);
+                    }
+                    ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(info), cx, by + barH + 2, 0xFFCCCCCC);
+                }
+            }
+        }
+
         rebuildPagerState();
         updateActionButtons();
 
@@ -651,6 +787,16 @@ public class CloudSaveManagerScreen extends Screen {
             firstRenderLogged = true;
             SaveManagerMod.LOGGER.info("CloudSaveManager: first render; saves={}, page={}", saves.size(), currentPage);
         }
+    }
+
+    private static String formatDurationShort(long seconds) {
+        if (seconds <= 0) return "0s";
+        long h = seconds / 3600;
+        long m = (seconds % 3600) / 60;
+        long s = seconds % 60;
+        if (h > 0) return String.format("%dh %02dm", h, m);
+        if (m > 0) return String.format("%dm %02ds", m, s);
+        return String.format("%ds", s);
     }
 
     private String sm$quotaLineComputed() {
@@ -783,3 +929,4 @@ public class CloudSaveManagerScreen extends Screen {
     }
 
 }
+
