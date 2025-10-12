@@ -40,6 +40,10 @@ import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.HashMap;
 
 @Mixin(SelectWorldScreen.class)
 public abstract class SinglePlayerScreenMixin extends Screen {
@@ -72,8 +76,127 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     @Unique private static volatile long upLastBytes = 0L;
     @Unique private static volatile double upSpeedBps = 0.0;
 
+    @Unique private volatile boolean sm$pendingZip = false;
+    @Unique private volatile boolean sm$zipStarted = false;
+    @Unique private Path sm$pendingWorldDir = null;
+    @Unique private String sm$pendingWorldName = null;
+
     @Unique
     private static boolean sm$isUploading() { return upActive; }
+
+    // Bottom action buttons (collected/refreshed per-screen). We store prior visibility/active states
+    @Unique private java.util.List<ButtonWidget> sm$bottomButtons = new java.util.ArrayList<>();
+    @Unique private java.util.Map<ButtonWidget, Boolean> sm$bottomPrevVisible = new java.util.HashMap<>();
+    @Unique private java.util.Map<ButtonWidget, Boolean> sm$bottomPrevActive = new java.util.HashMap<>();
+    @Unique private boolean sm$bottomHidden = false;
+
+    @Unique
+    private void sm$collectBottomButtons() {
+        sm$bottomButtons.clear();
+
+        // Consider anything whose bottom edge is within the last 20px, or top Y in last 70px
+        final int topThresholdY = this.height - 70;
+        final int bottomThresholdY = this.height - 20;
+
+        try {
+            // Scan common Screen lists across mappings
+            String[] listFieldNames = new String[] {
+                    "drawables", "children", "selectables", "drawableChildren",
+                    "renderables", "buttons", "buttonList"
+            };
+            for (String fname : listFieldNames) {
+                Class<?> c = this.getClass();
+                while (c != null && c != Object.class) {
+                    try {
+                        Field f = c.getDeclaredField(fname);
+                        f.setAccessible(true);
+                        Object val = f.get(this);
+                        if (val instanceof java.util.List<?> list) {
+                            for (Object o : list) {
+                                if (!(o instanceof ButtonWidget b)) continue;
+
+                                // Position (y) and height
+                                int by = -1, bh = -1;
+                                try { by = (int) b.getClass().getMethod("getY").invoke(b); } catch (Throwable ignored) {}
+                                if (by < 0) {
+                                    try { Field fy = b.getClass().getDeclaredField("y"); fy.setAccessible(true); by = fy.getInt(b); } catch (Throwable ignored) {}
+                                }
+                                try { bh = (int) b.getClass().getMethod("getHeight").invoke(b); } catch (Throwable ignored) {}
+                                if (bh < 0) {
+                                    try { Field fh = b.getClass().getDeclaredField("height"); fh.setAccessible(true); bh = fh.getInt(b); } catch (Throwable ignored) {}
+                                }
+                                int bottom = (by >= 0 ? by : 0) + Math.max(0, bh);
+
+                                // Label text (best effort)
+                                String label = null;
+                                try {
+                                    Object msg = b.getClass().getMethod("getMessage").invoke(b);
+                                    if (msg instanceof net.minecraft.text.Text t) label = t.getString();
+                                    else if (msg != null) label = String.valueOf(msg);
+                                } catch (Throwable ignored) {}
+
+                                boolean matchesLabel = false;
+                                if (label != null) {
+                                    String lc = label.toLowerCase();
+                                    // Ensure these are always treated as bottom actions
+                                    if (lc.contains("create new world")
+                                            || lc.contains("play selected world")
+                                            || lc.equals("back")
+                                            || lc.equals("done")
+                                            || lc.equals("cancel")) {
+                                        matchesLabel = true;
+                                    }
+                                }
+
+                                boolean isBottomByPos = (by >= topThresholdY) || (bottom >= bottomThresholdY);
+                                if (matchesLabel || isBottomByPos) {
+                                    if (!sm$bottomButtons.contains(b)) sm$bottomButtons.add(b);
+                                }
+                            }
+                        }
+                    } catch (NoSuchFieldException ignored) {
+                        // try superclass
+                    }
+                    c = c.getSuperclass();
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    @Unique
+    private void sm$hideBottomButtons() {
+        if (sm$bottomHidden) return;
+        sm$collectBottomButtons(); // refresh every time
+
+        for (ButtonWidget b : sm$bottomButtons) {
+            try {
+                sm$bottomPrevVisible.put(b, b.visible);
+                sm$bottomPrevActive.put(b, b.active);
+                b.visible = false;
+                b.active = false;
+            } catch (Throwable ignored) {}
+        }
+        sm$bottomHidden = true;
+    }
+
+    @Unique
+    private void sm$restoreBottomButtons() {
+        if (!sm$bottomHidden) return;
+        sm$collectBottomButtons(); // operate on current instances
+
+        for (ButtonWidget b : sm$bottomButtons) {
+            try {
+                Boolean prevV = sm$bottomPrevVisible.get(b);
+                Boolean prevA = sm$bottomPrevActive.get(b);
+                b.visible = (prevV == null) ? true : prevV;
+                b.active = (prevA == null) ? b.active : prevA;
+            } catch (Throwable ignored) {}
+        }
+        sm$bottomPrevVisible.clear();
+        sm$bottomPrevActive.clear();
+        sm$bottomHidden = false;
+    }
+
 
     // Only inject into init; avoid render/tick mixin signature issues
     @Inject(method = "init", at = @At("RETURN"))
@@ -101,23 +224,36 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
         // Per-frame lightweight updater: reposition buttons and toggle enabled state
         this.addDrawable((Drawable) this::savemanager$frameUpdate);
+
+        // If an upload is already active (from another screen instance), reflect that immediately
+        try {
+            sm$collectBottomButtons();
+            if (sm$isUploading()) {
+                // Keep upload disabled and remove bottom buttons now
+                if (this.uploadSaveBtn != null) this.uploadSaveBtn.active = false;
+                sm$hideBottomButtons();
+            }
+        } catch (Throwable ignored) {}
     }
 
     @Unique
     private void savemanager$frameUpdate(DrawContext ctx, int mouseX, int mouseY, float delta) {
         savemanager$repositionButtons();
         if (this.uploadSaveBtn != null) {
-            // Disable upload button while zipping/uploading
             this.uploadSaveBtn.active = sm$hasSelection() && !sm$isUploading();
         }
 
-        // Draw overlay status when uploading/zipping
+        if (sm$isUploading()) {
+            sm$hideBottomButtons();
+        } else {
+            sm$restoreBottomButtons();
+        }
+
         if (sm$isUploading()) {
             int cx = this.width / 2;
-            int baseY = this.height - 60;
+            int baseY = this.height - 50;
             int statusY = baseY;
             if (upZipping) {
-                // Draw "Zipping..." and spinner similar to CloudSaveManagerScreen
                 ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("Zipping..."), cx, statusY, 0xFFFFFFFF);
 
                 int radius = 8;
@@ -144,7 +280,6 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                     ctx.fill(x - 1, y - 1, x + 2, y + 2, col);
                 }
             } else {
-                // Upload progress bar phase
                 long uploaded = upUploaded;
                 long total = upTotal;
                 double speed = upSpeedBps;
@@ -172,7 +307,6 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                     }
                     ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(info), cx, by + barH + 2, 0xFFCCCCCC);
                 } else {
-                    // Unknown total -> spinner with "Uploading..."
                     ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("Uploading..."), cx, statusY, 0xFFFFFFFF);
                     int radius = 8;
                     int dots = 12;
@@ -199,6 +333,107 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                     }
                 }
             }
+        }
+
+        // After first frame renders the spinner, kick off the zipping thread
+        if (sm$pendingZip && !sm$zipStarted) {
+            sm$zipStarted = true;
+            final Path dir = sm$pendingWorldDir;
+            final String wname = sm$pendingWorldName;
+            new Thread(() -> {
+                try {
+                    Path zip = sm$zipWorld(dir, wname == null ? "world" : wname.replaceAll("[\\\\/:*?\"<>|]+", "_"));
+                    sm$uploadZipDirect(zip, wname, savemanager$net);
+                } catch (Exception e) {
+                    SaveManagerMod.LOGGER.error("(savemanager) Failed zipping world", e);
+                    upActive = false;
+                    upZipping = false;
+                    this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
+                            Text.literal("Upload Failed"), Text.literal("Failed to prepare world zip"))));
+                } finally {
+                    sm$pendingZip = false;
+                    sm$pendingWorldDir = null;
+                    sm$pendingWorldName = null;
+                }
+            }, "SaveManager-zip").start();
+        }
+    }
+
+    @Unique
+    private void sm$beginZipOnNextFrame(String worldName, Path worldDir) {
+        // Mark zipping/uploading state BEFORE zipping so UI shows spinner
+        upActive = true;
+        upZipping = true;
+        upUploaded = 0L;
+        upTotal = -1L;
+        upStartNanos = System.nanoTime();
+        upLastTickNanos = upStartNanos;
+        upLastBytes = 0L;
+        upSpeedBps = 0.0;
+
+        sm$pendingWorldName = worldName;
+        sm$pendingWorldDir = worldDir;
+        sm$pendingZip = true;
+        sm$zipStarted = false;
+
+        try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
+    }
+
+    // Add this method
+    @Unique
+    private void sm$uploadZipDirect(final Path zipFinal, final String origWorldName, final NetworkManager savemanager$net) {
+        try {
+            // Transition from zipping to uploading
+            upZipping = false;
+            upActive = true;
+            try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
+
+            savemanager$net.uploadWorldSave(origWorldName, zipFinal, (sent, total) -> {
+                upUploaded = Math.max(0L, sent);
+                if (total > 0) upTotal = total;
+
+                long now = System.nanoTime();
+                long dtNs = now - upLastTickNanos;
+                long dBytes = upUploaded - upLastBytes;
+                if (dtNs > 50_000_000L) {
+                    double instBps = dBytes > 0 ? (dBytes * 1_000_000_000.0) / dtNs : 0.0;
+                    double alpha = 0.2;
+                    upSpeedBps = upSpeedBps <= 0 ? instBps : (alpha * instBps + (1 - alpha) * upSpeedBps);
+                    upLastTickNanos = now;
+                    upLastBytes = upUploaded;
+                }
+                try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
+            }).whenComplete((json, uploadErr) -> {
+                try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+                this.client.execute(() -> {
+                    upActive = false;
+                    upZipping = false;
+                    upUploaded = 0L;
+                    upTotal = -1L;
+                    upStartNanos = 0L;
+                    upLastBytes = 0L;
+                    upLastTickNanos = 0L;
+                    upSpeedBps = 0.0;
+
+                    if (uploadErr != null) {
+                        SaveManagerMod.LOGGER.error("(savemanager) Upload failed for \"{}\"", origWorldName, uploadErr);
+                        this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
+                                Text.literal("Upload Failed"),
+                                Text.literal("Upload failed: " + safeErrMessage(uploadErr))));
+                    } else {
+                        SaveManagerMod.LOGGER.info("(savemanager) Upload succeeded for \"{}\"", origWorldName);
+                        this.client.setScreen((SelectWorldScreen)(Object)this);
+                    }
+                });
+            });
+        } catch (Throwable t) {
+            try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+            SaveManagerMod.LOGGER.error("(savemanager) Exception starting upload for \"{}\"", origWorldName, t);
+            this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
+                    Text.literal("Upload Failed"),
+                    Text.literal("Upload error: " + safeErrMessage(t)))));
+            upActive = false;
+            upZipping = false;
         }
     }
 
@@ -650,51 +885,57 @@ public abstract class SinglePlayerScreenMixin extends Screen {
             }
             savemanager$net.setApiKey(apiKey);
 
-            String worldName = sel.getDisplayName();
-            Path worldDir = sel.getDir();
+            final String worldName = sel.getDisplayName();
+            final Path worldDir = sel.getDir();
             if (worldDir == null || !Files.exists(worldDir)) {
                 SaveManagerMod.LOGGER.warn("(savemanager) Upload canceled: world directory not found: {}", sel);
                 return;
             }
 
-            // Mark zipping/uploading state BEFORE zipping so UI shows spinner
-            upActive = true;
-            upZipping = true;
-            upUploaded = 0L;
-            upTotal = -1L;
-            upStartNanos = System.nanoTime();
-            upLastTickNanos = upStartNanos;
-            upLastBytes = 0L;
-            upSpeedBps = 0.0;
-            try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
+            // Validate duplicate name BEFORE zipping
+            savemanager$net.listWorldSaveNames().whenComplete((names, namesErr) -> {
+                Runnable begin = () -> this.client.execute(() -> sm$beginZipOnNextFrame(worldName, worldDir));
 
-            // Zip the world
-            Path zip = null;
-            try {
-                zip = sm$zipWorld(worldDir, worldName == null ? "world" : worldName.replaceAll("[\\\\/:*?\"<>|]+", "_"));
-            } catch (Exception e) {
-                SaveManagerMod.LOGGER.error("(savemanager) Failed zipping world", e);
-                // Clear state and show error
-                upActive = false;
-                upZipping = false;
-                this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
-                        Text.literal("Upload Failed"), Text.literal("Failed to prepare world zip"))));
-                return;
-            }
+                if (namesErr != null) {
+                    SaveManagerMod.LOGGER.warn("(savemanager) Failed to fetch name list; proceeding: {}", safeErrMessage(namesErr));
+                    begin.run();
+                    return;
+                }
 
-            // Upload asynchronously
-            final Path zipFinal = zip;
-            try {
-                // Use the upload path that first queries cloud save names and prompts on conflicts
-                savemanager$uploadWithNameCheck(zipFinal, worldName, savemanager$net);
-            } catch (Throwable e) {
-                try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
-                SaveManagerMod.LOGGER.error("(savemanager) Upload errored", e);
-                upActive = false;
-                upZipping = false;
-                this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
-                        Text.literal("Upload Failed"), Text.literal("Upload error: " + safeErrMessage(e)))));
-            }
+                boolean exists = false;
+                String sanitized = sanitizeFolderName(worldName);
+                if (names != null) {
+                    for (String n : names) {
+                        if (n == null) continue;
+                        if (n.equalsIgnoreCase(worldName) || (!sanitized.isEmpty() && n.equalsIgnoreCase(sanitized))) {
+                            exists = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!exists) {
+                    // No conflict -> start when this screen is active (spinner first)
+                    begin.run();
+                    return;
+                }
+
+                // Conflict -> prompt. Only start after user returns to this screen.
+                this.client.execute(() -> {
+                    Text title = Text.literal("Overwrite Cloud Save?");
+                    Text message = Text.literal("A save named \"" + worldName + "\" already exists in the cloud. Overwrite?");
+                    this.client.setScreen(new ConfirmScreen(confirmed -> {
+                        if (!confirmed) {
+                            // User canceled; nothing to do
+                            this.client.setScreen((SelectWorldScreen)(Object)this);
+                            return;
+                        }
+                        // Return to this screen, then schedule start (spinner first)
+                        this.client.setScreen((SelectWorldScreen)(Object)this);
+                        begin.run();
+                    }, title, message));
+                });
+            });
         } catch (Throwable t) {
             SaveManagerMod.LOGGER.error("(savemanager) Unexpected error in upload flow", t);
             upActive = false;
