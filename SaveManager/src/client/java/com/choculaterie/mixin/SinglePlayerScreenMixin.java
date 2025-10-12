@@ -144,8 +144,6 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         }
     }
 
-    // ==== Upload implementation ====
-
     @Unique
     private boolean sm$hasSelection() {
         return sm$getSelectedWorld() != null;
@@ -388,29 +386,6 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     }
 
     @Unique
-    private void savemanager$fetchWorldNames(java.util.function.Consumer<java.util.List<String>> onComplete) {
-        try {
-            // savemanager$net is the NetworkManager instance used elsewhere in the mixin
-            savemanager$net.listWorldSaveNames().whenComplete((names, err) -> {
-                if (err != null) {
-                    SaveManagerMod.LOGGER.error("(savemanager) failed fetching save names", err);
-                    if (this.client != null) this.client.execute(() -> onComplete.accept(java.util.Collections.emptyList()));
-                    return;
-                }
-                java.util.List<String> safeList = names == null ? java.util.Collections.emptyList() : names;
-                if (this.client != null) {
-                    this.client.execute(() -> onComplete.accept(safeList));
-                } else {
-                    onComplete.accept(safeList);
-                }
-            });
-        } catch (Throwable t) {
-            SaveManagerMod.LOGGER.error("(savemanager) unexpected error fetching save names", t);
-            if (this.client != null) this.client.execute(() -> onComplete.accept(java.util.Collections.emptyList()));
-        }
-    }
-
-    @Unique
     private static Object sm$invoke(Object target, String method) {
         if (target == null) return null;
         Class<?> c = target.getClass();
@@ -572,27 +547,6 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         String one = m.split("\n", 2)[0];
         if (one.length() > 200) one = one.substring(0, 200) + "...";
         return one;
-    }
-
-    @Unique
-    private static String savemanager$norm(String s) {
-        return s == null ? "" : s.trim();
-    }
-
-    @Unique
-    private static com.google.gson.JsonArray savemanager$findArray(JsonObject obj, String... names) {
-        for (String n : names) {
-            if (!obj.has(n)) continue;
-            var e = obj.get(n);
-            if (e == null) continue;
-            if (e.isJsonArray()) return e.getAsJsonArray();
-            if (e.isJsonObject()) {
-                JsonObject o = e.getAsJsonObject();
-                if (o.has("items") && o.get("items").isJsonArray()) return o.getAsJsonArray("items");
-                if (o.has("saves") && o.get("saves").isJsonArray()) return o.getAsJsonArray("saves");
-            }
-        }
-        return null;
     }
 
     @Unique
