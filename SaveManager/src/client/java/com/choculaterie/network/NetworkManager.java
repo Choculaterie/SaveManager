@@ -114,6 +114,38 @@ public class NetworkManager {
                 .thenApply(this::handleJsonResponse);
     }
 
+    public CompletableFuture<java.util.List<String>> listWorldSaveNames() {
+        validateApiKey();
+
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/names"))
+                .header(API_KEY_HEADER, apiKey)
+                .GET()
+                .build();
+
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    if (response.statusCode() >= 400) {
+                        throw new RuntimeException("Request failed: " + response.statusCode() + " - " + response.body());
+                    }
+
+                    String body = response.body();
+                    java.util.Optional<String> ct = response.headers().firstValue("Content-Type");
+                    if (ct.map(s -> s.contains("text/html")).orElse(false) || body.startsWith("<!DOCTYPE")) {
+                        throw new RuntimeException("Unexpected HTML response from server. Check the API URL.");
+                    }
+
+                    com.google.gson.JsonArray arr = com.google.gson.JsonParser.parseString(body).getAsJsonArray();
+                    java.util.List<String> out = new java.util.ArrayList<>();
+                    for (com.google.gson.JsonElement e : arr) {
+                        if (e != null && e.isJsonPrimitive()) {
+                            out.add(e.getAsString());
+                        }
+                    }
+                    return out;
+                });
+    }
+
     public CompletableFuture<Path> downloadWorldSave(String saveId, Path destinationDirectory) {
         validateApiKey();
 

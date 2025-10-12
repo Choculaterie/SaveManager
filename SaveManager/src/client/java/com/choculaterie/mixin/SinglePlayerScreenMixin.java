@@ -3,6 +3,7 @@ package com.choculaterie.mixin;
 import com.choculaterie.SaveManagerMod;
 import com.choculaterie.gui.AccountLinkingScreen;
 import com.choculaterie.network.NetworkManager;
+import com.choculaterie.util.SelectedWorld;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import net.minecraft.client.MinecraftClient;
@@ -14,6 +15,7 @@ import net.minecraft.client.gui.screen.world.WorldListWidget;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
+import net.minecraft.client.gui.screen.ConfirmScreen;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
@@ -36,7 +38,6 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.util.Base64;
-import java.util.concurrent.CompletableFuture;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -59,6 +60,8 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     @Unique private static final byte[] AES_KEY = sm$deriveKey(KEY_MATERIAL);
     @Unique private static final int GCM_TAG_BITS = 128;
 
+    @Unique private final NetworkManager savemanager$net = new NetworkManager();
+
     // Only inject into init; avoid render/tick mixin signature issues
     @Inject(method = "init", at = @At("RETURN"))
     private void savemanager$init(CallbackInfo ci) {
@@ -72,7 +75,7 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         // Upload button placed just to the right of the icon; enabled only with a selected world
         this.uploadSaveBtn = ButtonWidget.builder(
                 Text.literal("\uD83D\uDCBE"),
-                b -> sm$startUploadSelectedWorld()
+                b -> savemanager$confirmThenUploadSelected()
         ).dimensions(0, 0, 20, ICON_SIZE).build();
         this.uploadSaveBtn.active = false;
         this.addDrawableChild(this.uploadSaveBtn);
@@ -145,77 +148,80 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
     @Unique
     private boolean sm$hasSelection() {
-        WorldListWidget list = sm$getWorldList();
-        if (list == null) return false;
-        try { return WorldListWidget.class.getMethod("getSelectedOrNull").invoke(list) != null; } catch (Throwable ignored) {}
-        try { return WorldListWidget.class.getMethod("getSelected").invoke(list) != null; } catch (Throwable ignored) {}
-        return false;
+        return sm$getSelectedWorld() != null;
     }
 
     @Unique
-    private void sm$startUploadSelectedWorld() {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null) return;
+    private SelectedWorld sm$getSelectedWorld() {
+        try {
+            WorldListWidget list = sm$getWorldList();
+            if (list == null) return null;
 
-        String apiKey = sm$loadApiKey(mc);
-        if (apiKey == null || apiKey.isBlank()) {
-            SaveManagerMod.LOGGER.warn("SaveManager: no API key configured");
-            mc.execute(() -> mc.setScreen(new AccountLinkingScreen((Screen) (Object) this)));
-            return;
-        }
+            Object entry = sm$getSelectedEntry(list);
+            if (entry == null) return null;
 
-        WorldListWidget list = sm$getWorldList();
-        if (list == null) return;
+            String dirName = sm$getWorldDirNameFromEntry(entry);
+            String display = sm$getWorldDisplayNameFromEntry(entry);
+            if (display == null) display = "";
 
-        Object entry = sm$getSelectedEntry(list);
-        if (entry == null) return;
-
-        String dirName = sm$getWorldDirNameFromEntry(entry);
-        String worldName = sm$getWorldDisplayNameFromEntry(entry);
-        if (dirName == null || dirName.isBlank()) {
-            SaveManagerMod.LOGGER.warn("SaveManager: could not resolve world directory name");
-            return;
-        }
-
-        final String uploadName = (worldName == null || worldName.isBlank()) ? dirName : worldName;
-        final Path finalWorldDir = mc.runDirectory.toPath().resolve("saves").resolve(dirName);
-        if (!Files.isDirectory(finalWorldDir)) {
-            SaveManagerMod.LOGGER.warn("SaveManager: world dir does not exist: {}", finalWorldDir);
-            return;
-        }
-
-        final NetworkManager nm = new NetworkManager();
-        nm.setApiKey(apiKey);
-
-        CompletableFuture.runAsync(() -> {
-            Path zip = null;
-            try {
-                zip = sm$zipWorld(finalWorldDir, uploadName);
-                SaveManagerMod.LOGGER.info("SaveManager: uploading {} ({} bytes)", uploadName, Files.size(zip));
-                nm.uploadWorldSave(uploadName, zip).join();
-                SaveManagerMod.LOGGER.info("SaveManager: upload completed");
-            } catch (Exception e) {
-                SaveManagerMod.LOGGER.error("SaveManager: upload failed", e);
-            } finally {
-                if (zip != null) {
-                    try { Files.deleteIfExists(zip); } catch (Exception ignored) {}
+            // Resolve path using client runDirectory -> saves/<dirName>
+            if (dirName != null && !dirName.isEmpty()) {
+                Path candidate = this.client.runDirectory.toPath().resolve("saves").resolve(dirName);
+                if (Files.exists(candidate)) {
+                    return new SelectedWorld(candidate, display);
                 }
             }
-        });
+
+            // Fallback: try to find a folder in saves/ that matches the display name or sanitized variant
+            try {
+                Path saves = this.client.runDirectory.toPath().resolve("saves");
+                if (Files.exists(saves) && Files.isDirectory(saves)) {
+                    String displaySan = (display == null) ? "" : display.trim();
+                    for (Path p : Files.newDirectoryStream(saves)) {
+                        if (!Files.isDirectory(p)) continue;
+                        String fn = p.getFileName().toString();
+                        if (dirName != null && dirName.equals(fn)) return new SelectedWorld(p, display);
+                        if (!displaySan.isEmpty() && (fn.equals(displaySan) || fn.equalsIgnoreCase(displaySan))) return new SelectedWorld(p, display);
+                        // loose san: replace illegal chars
+                        String loose = displaySan.replaceAll("[\\\\/:*?\"<>|]+", "_");
+                        if (!loose.isEmpty() && fn.equals(loose)) return new SelectedWorld(p, display);
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+        } catch (Throwable t) {
+            SaveManagerMod.LOGGER.warn("(savemanager) sm$getSelectedWorld reflection error", t);
+        }
+        return null;
     }
+
 
     @Unique
     private WorldListWidget sm$getWorldList() {
         try {
+            // First try declared fields on the concrete class and superclasses
             Class<?> c = this.getClass();
             while (c != null && c != Object.class) {
                 for (Field f : c.getDeclaredFields()) {
-                    if (!f.getType().getName().equals("net.minecraft.client.gui.screen.world.WorldListWidget")) continue;
-                    f.setAccessible(true);
-                    Object v = f.get(this);
-                    if (v instanceof WorldListWidget wl) return wl;
+                    Class<?> t = f.getType();
+                    if (t == null) continue;
+                    if (WorldListWidget.class.isAssignableFrom(t)) {
+                        f.setAccessible(true);
+                        Object val = f.get(this);
+                        if (val != null) return (WorldListWidget) val;
+                    }
                 }
                 c = c.getSuperclass();
+            }
+
+            // Also try SelectWorldScreen.class directly (mappings may differ)
+            Class<?> sw = SelectWorldScreen.class;
+            for (Field f : sw.getDeclaredFields()) {
+                if (WorldListWidget.class.isAssignableFrom(f.getType())) {
+                    f.setAccessible(true);
+                    Object val = f.get((Object)this);
+                    if (val != null) return (WorldListWidget) val;
+                }
             }
         } catch (Throwable ignored) {}
         return null;
@@ -250,20 +256,178 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
     @Unique
     private static Object sm$getFieldByNames(Object target, String... names) {
+        if (target == null) return null;
+        Class<?> c = target.getClass();
+
+        // Exact-name search up the class hierarchy
         for (String n : names) {
-            try {
-                Field f = target.getClass().getDeclaredField(n);
-                f.setAccessible(true);
-                return f.get(target);
-            } catch (Throwable ignored) {}
+            Class<?> cur = c;
+            while (cur != null && cur != Object.class) {
+                try {
+                    Field f = cur.getDeclaredField(n);
+                    f.setAccessible(true);
+                    try {
+                        Object v = f.get(target);
+                        if (v != null) return v;
+                    } catch (IllegalAccessException ignored) {
+                        // if access still fails, continue searching
+                    }
+                } catch (NoSuchFieldException ignored) {
+                    // try superclass
+                }
+                cur = cur.getSuperclass();
+            }
         }
+
+        // Looser name-contains search if exact names didn't match
+        for (String n : names) {
+            Class<?> cur = c;
+            while (cur != null && cur != Object.class) {
+                for (Field f : cur.getDeclaredFields()) {
+                    try {
+                        if (f.getName().toLowerCase().contains(n.toLowerCase())) {
+                            f.setAccessible(true);
+                            try {
+                                Object v = f.get(target);
+                                if (v != null) return v;
+                            } catch (IllegalAccessException ignored) {
+                                // continue trying other fields
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                        // ignore other reflection issues and continue
+                    }
+                }
+                cur = cur.getSuperclass();
+            }
+        }
+
         return null;
     }
 
     @Unique
-    private static Object sm$invoke(Object target, String method) {
+    private void savemanager$uploadWithNameCheck(final Path zipFinal, final String origWorldName, final NetworkManager savemanager$net) {
+        SaveManagerMod.LOGGER.info("(savemanager) Querying cloud save names for upload: {}", origWorldName);
+
+        // Reusable upload action as a lambda so we can call it from multiple branches
+        Runnable doUpload = () -> {
+            try {
+                savemanager$net.uploadWorldSave(origWorldName, zipFinal).whenComplete((json, uploadErr) -> {
+                    try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+                    this.client.execute(() -> {
+                        if (uploadErr != null) {
+                            SaveManagerMod.LOGGER.error("(savemanager) Upload failed for \"{}\"", origWorldName, uploadErr);
+                            this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
+                                    Text.literal("Upload Failed"),
+                                    Text.literal("Upload failed: " + safeErrMessage(uploadErr))));
+                        } else {
+                            SaveManagerMod.LOGGER.info("(savemanager) Upload succeeded for \"{}\"", origWorldName);
+                            // No success prompt per request — return to world list
+                            this.client.setScreen((SelectWorldScreen)(Object)this);
+                        }
+                    });
+                });
+            } catch (Throwable t) {
+                try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+                SaveManagerMod.LOGGER.error("(savemanager) Exception starting upload for \"{}\"", origWorldName, t);
+                this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
+                        Text.literal("Upload Failed"),
+                        Text.literal("Upload failed: " + safeErrMessage(t)))));
+            }
+        };
+
+        // Query existing names
+        savemanager$net.listWorldSaveNames().whenComplete((names, namesErr) -> {
+            if (namesErr != null) {
+                SaveManagerMod.LOGGER.warn("(savemanager) Failed to fetch name list; proceeding to upload for \"{}\": {}", origWorldName, safeErrMessage(namesErr));
+                doUpload.run();
+                return;
+            }
+
+            boolean exists = false;
+            String sanitized = sanitizeFolderName(origWorldName);
+            if (names != null) {
+                for (String n : names) {
+                    if (n == null) continue;
+                    if (n.equalsIgnoreCase(origWorldName) || (!sanitized.isEmpty() && n.equalsIgnoreCase(sanitized))) {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!exists) {
+                SaveManagerMod.LOGGER.info("(savemanager) Name not present in cloud; uploading \"{}\" immediately", origWorldName);
+                doUpload.run();
+                return;
+            }
+
+            // Name exists -> prompt user to confirm overwrite
+            this.client.execute(() -> {
+                Text title = Text.literal("Overwrite Cloud Save?");
+                Text message = Text.literal("A save named \"" + origWorldName + "\" already exists in the cloud. Overwrite?");
+                this.client.setScreen(new ConfirmScreen(confirmed -> {
+                    if (!confirmed) {
+                        // Cancelled: return to world list and clean up temp zip
+                        try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+                        this.client.setScreen((SelectWorldScreen)(Object)this);
+                        return;
+                    }
+                    // Confirmed -> upload
+                    doUpload.run();
+                }, title, message));
+            });
+        });
+    }
+
+    @Unique
+    private static String sanitizeFolderName(String s) {
+        if (s == null) return "";
+        String clean = s.trim().replaceAll("[\\\\/:*?\"<>|]+", "_");
+        return clean.isBlank() ? "" : clean;
+    }
+
+    @Unique
+    private void savemanager$fetchWorldNames(java.util.function.Consumer<java.util.List<String>> onComplete) {
         try {
-            var m = target.getClass().getMethod(method);
+            // savemanager$net is the NetworkManager instance used elsewhere in the mixin
+            savemanager$net.listWorldSaveNames().whenComplete((names, err) -> {
+                if (err != null) {
+                    SaveManagerMod.LOGGER.error("(savemanager) failed fetching save names", err);
+                    if (this.client != null) this.client.execute(() -> onComplete.accept(java.util.Collections.emptyList()));
+                    return;
+                }
+                java.util.List<String> safeList = names == null ? java.util.Collections.emptyList() : names;
+                if (this.client != null) {
+                    this.client.execute(() -> onComplete.accept(safeList));
+                } else {
+                    onComplete.accept(safeList);
+                }
+            });
+        } catch (Throwable t) {
+            SaveManagerMod.LOGGER.error("(savemanager) unexpected error fetching save names", t);
+            if (this.client != null) this.client.execute(() -> onComplete.accept(java.util.Collections.emptyList()));
+        }
+    }
+
+    @Unique
+    private static Object sm$invoke(Object target, String method) {
+        if (target == null) return null;
+        Class<?> c = target.getClass();
+        while (c != null && c != Object.class) {
+            try {
+                java.lang.reflect.Method m = c.getDeclaredMethod(method);
+                m.setAccessible(true);
+                return m.invoke(target);
+            } catch (NoSuchMethodException ignored) {
+            } catch (Throwable t) {
+                return null;
+            }
+            c = c.getSuperclass();
+        }
+        // try common no-arg methods with different common names
+        try {
+            java.lang.reflect.Method m = target.getClass().getMethod(method);
             m.setAccessible(true);
             return m.invoke(target);
         } catch (Throwable ignored) {}
@@ -348,5 +512,110 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         cipher.init(Cipher.DECRYPT_MODE, keySpec, new GCMParameterSpec(GCM_TAG_BITS, iv));
         byte[] pt = cipher.doFinal(ct);
         return new String(pt, StandardCharsets.UTF_8);
+    }
+
+    @Unique
+    private void savemanager$confirmThenUploadSelected() {
+        try {
+            SelectedWorld sel = sm$getSelectedWorld();
+            if (sel == null) {
+                SaveManagerMod.LOGGER.warn("(savemanager) Upload canceled: no world selected");
+                return;
+            }
+
+            String apiKey = sm$loadApiKey(this.client);
+            if (apiKey == null || apiKey.isBlank()) {
+                SaveManagerMod.LOGGER.warn("(savemanager) Upload canceled: no API key configured");
+                return;
+            }
+            savemanager$net.setApiKey(apiKey);
+
+            String worldName = sel.getDisplayName();
+            Path worldDir = sel.getDir();
+            if (worldDir == null || !Files.exists(worldDir)) {
+                SaveManagerMod.LOGGER.warn("(savemanager) Upload canceled: world directory not found: {}", sel);
+                return;
+            }
+
+            // Zip the world
+            Path zip = null;
+            try {
+                zip = sm$zipWorld(worldDir, worldName == null ? "world" : worldName.replaceAll("[\\\\/:*?\"<>|]+", "_"));
+            } catch (Exception e) {
+                SaveManagerMod.LOGGER.error("(savemanager) Failed zipping world", e);
+                this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
+                        Text.literal("Upload Failed"), Text.literal("Failed to prepare world zip"))));
+                return;
+            }
+
+            // Upload asynchronously
+            final Path zipFinal = zip;
+            try {
+                // Use the upload path that first queries cloud save names and prompts on conflicts
+                savemanager$uploadWithNameCheck(zipFinal, worldName, savemanager$net);
+            } catch (Throwable e) {
+                try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+                SaveManagerMod.LOGGER.error("(savemanager) Upload errored", e);
+                this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
+                        Text.literal("Upload Failed"), Text.literal("Upload error: " + safeErrMessage(e)))));
+            }
+        } catch (Throwable t) {
+            SaveManagerMod.LOGGER.error("(savemanager) Unexpected error in upload flow", t);
+        }
+    }
+
+    @Unique
+    private static String safeErrMessage(Throwable t) {
+        if (t == null) return "Unknown";
+        String m = t.getMessage();
+        if (m == null || m.isBlank()) return t.getClass().getSimpleName();
+        String one = m.split("\n", 2)[0];
+        if (one.length() > 200) one = one.substring(0, 200) + "...";
+        return one;
+    }
+
+    @Unique
+    private static String savemanager$norm(String s) {
+        return s == null ? "" : s.trim();
+    }
+
+    @Unique
+    private static com.google.gson.JsonArray savemanager$findArray(JsonObject obj, String... names) {
+        for (String n : names) {
+            if (!obj.has(n)) continue;
+            var e = obj.get(n);
+            if (e == null) continue;
+            if (e.isJsonArray()) return e.getAsJsonArray();
+            if (e.isJsonObject()) {
+                JsonObject o = e.getAsJsonObject();
+                if (o.has("items") && o.get("items").isJsonArray()) return o.getAsJsonArray("items");
+                if (o.has("saves") && o.get("saves").isJsonArray()) return o.getAsJsonArray("saves");
+            }
+        }
+        return null;
+    }
+
+    @Unique
+    private static String savemanager$getString(JsonObject obj, String... names) {
+        for (String n : names) {
+            if (!obj.has(n)) continue;
+            var e = obj.get(n);
+            if (e == null || e.isJsonNull()) continue;
+            if (e.isJsonPrimitive()) {
+                var p = e.getAsJsonPrimitive();
+                if (p.isString()) return p.getAsString();
+                if (p.isNumber()) return String.valueOf(p.getAsLong());
+                if (p.isBoolean()) return String.valueOf(p.getAsBoolean());
+            } else if (e.isJsonObject()) {
+                JsonObject o = e.getAsJsonObject();
+                String s = savemanager$getString(o, "text");
+                if (!s.isEmpty()) return s;
+                s = savemanager$getString(o, "value");
+                if (!s.isEmpty()) return s;
+                s = savemanager$getString(o, "iso");
+                if (!s.isEmpty()) return s;
+            }
+        }
+        return "";
     }
 }

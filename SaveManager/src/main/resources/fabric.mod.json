@@ -3,16 +3,16 @@
   "id": "savemanager",
   "version": "${version}",
   "name": "Save Manager",
-  "description": "A mod for managing and syncing Minecraft world saves with cloud storage",
+  "description": "A mod for managing and syncing Minecraft world saves with the Choculaterie cloud storage",
   "authors": [
-    "Choculaterie"
+    "Choculat"
   ],
   "contact": {
     "homepage": "https://github.com/Choculaterie/SaveManager",
     "sources": "https://github.com/Choculaterie/SaveManager"
   },
   "license": "MIT",
-  "icon": "assets/savemanager/icon.png",
+  "icon": "assets/save-manager/icon.png",
   "environment": "client",
   "entrypoints": {
     "main": [

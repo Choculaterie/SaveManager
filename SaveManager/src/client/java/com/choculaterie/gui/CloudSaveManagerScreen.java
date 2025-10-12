@@ -10,6 +10,7 @@ import net.minecraft.client.gui.screen.ConfirmScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.PressableWidget;
+import net.minecraft.client.gui.screen.world.SelectWorldScreen;
 import net.minecraft.text.Text;
 
 import java.io.File;
@@ -45,11 +46,13 @@ public class CloudSaveManagerScreen extends Screen {
     // Selection (global index in `saves`, -1 means none)
     private int selectedIndex = -1;
 
+    private static final long QUOTA_LIMIT_BYTES = 5L * 1024L * 1024L * 1024L; // 5 GB
+
     // Invisible click areas for rows
     private final List<PressableWidget> rowHitBoxes = new ArrayList<>();
 
     public CloudSaveManagerScreen(Screen parent) {
-        super(Text.literal("Cloud Saves"));
+        super(Text.literal("Choculaterie Cloud Saves"));
         this.parent = parent;
     }
 
@@ -60,8 +63,12 @@ public class CloudSaveManagerScreen extends Screen {
         int bottomY = this.height - 28;
 
         // Top buttons
-        this.backBtn = ButtonWidget.builder(Text.literal("←"), b -> this.client.setScreen(parent))
-                .dimensions(10, 10, 20, 20).build();
+        this.backBtn = ButtonWidget.builder(Text.literal("←"), b -> {
+            if (this.client != null) {
+                // Re-open a fresh SelectWorldScreen to force a filesystem rescan
+                this.client.setScreen(new SelectWorldScreen(this.parent));
+            }
+        }).dimensions(10, 10, 20, 20).build();
         this.addDrawableChild(backBtn);
 
         this.refreshBtn = ButtonWidget.builder(Text.literal("\uD83D\uDD04"), b -> {
@@ -405,7 +412,7 @@ public class CloudSaveManagerScreen extends Screen {
                 selectedIndex = globalIndex;
                 status = "";
                 updateActionButtons();
-            }).dimensions(g.listX, ry - 2, g.listW, g.rowHeight + 4).build();
+            }).dimensions(g.listX, ry - 4, g.listW, g.rowHeight).build();
 
             // Invisible but interactive
             try { hit.setAlpha(0.0f); } catch (Throwable ignored) {}
@@ -446,29 +453,138 @@ public class CloudSaveManagerScreen extends Screen {
     }
 
     private void onDownload(SaveItem s) {
-        MinecraftClient mc = this.client;
-        if (mc == null) return;
         loading = true;
         status = "Downloading...";
         updateActionButtons();
-        Path outDir = mc.runDirectory.toPath().resolve("cloud_downloads");
-        networkManager.downloadWorldSave(s.id, outDir).whenComplete((path, err) -> runOnClient(() -> {
-            if (err != null) {
-                SaveManagerMod.LOGGER.error("Download failed", err);
-                status = "Download failed";
-            } else {
-                status = "Saved to: " + path.getFileName();
-            }
+
+        Path savesDir = this.client.runDirectory.toPath().resolve("saves");
+        try { Files.createDirectories(savesDir); } catch (Exception ignored) {}
+
+        // Download zip to a temp dir
+        Path tmpDir;
+        try {
+            tmpDir = Files.createTempDirectory("savemanager-dl-");
+        } catch (Exception e) {
+            SaveManagerMod.LOGGER.error("CloudSaveManager: temp dir error", e);
+            status = "Failed to prepare temp dir";
             loading = false;
             updateActionButtons();
-        }));
+            return;
+        }
+
+        networkManager.downloadWorldSave(s.id, tmpDir).whenComplete((zipPath, err) -> {
+            if (err != null) {
+                SaveManagerMod.LOGGER.error("CloudSaveManager: download failed", err);
+                runOnClient(() -> {
+                    status = "Download failed";
+                    loading = false;
+                    updateActionButtons();
+                });
+                return;
+            }
+
+            String baseName = sanitizeFolderName(s.worldName);
+            if (baseName.isEmpty()) baseName = stripExtSafe(zipPath.getFileName().toString(), "world");
+            Path targetBase = ensureUniqueDir(savesDir, baseName);
+
+            String finalMsg;
+            try {
+                Files.createDirectories(targetBase);
+                unzipSmart(zipPath, targetBase);
+                finalMsg = "Downloaded to saves/" + targetBase.getFileName();
+            } catch (Exception ex) {
+                SaveManagerMod.LOGGER.error("CloudSaveManager: unzip failed", ex);
+                finalMsg = "Unzip failed";
+            } finally {
+                try { Files.deleteIfExists(zipPath); } catch (Exception ignored) {}
+                try { Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
+            }
+
+            String msg = finalMsg;
+            runOnClient(() -> {
+                status = msg;
+                loading = false;
+                updateActionButtons();
+            });
+        });
     }
 
-    private void runOnClient(Runnable r) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null) return;
-        mc.execute(r);
+    // Detects if zip has a single root directory and strips it during extraction
+    private static void unzipSmart(Path zipFile, Path targetBase) throws Exception {
+        String root = detectSingleRootDir(zipFile);
+        try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(Files.newInputStream(zipFile))) {
+            for (java.util.zip.ZipEntry e; (e = zis.getNextEntry()) != null; ) {
+                if (e.isDirectory()) continue;
+                String name = e.getName().replace('\\', '/');
+                if (root != null && name.startsWith(root + "/")) {
+                    name = name.substring(root.length() + 1);
+                }
+                if (name.isBlank()) continue;
+
+                Path out = safeResolve(targetBase, name);
+                Files.createDirectories(out.getParent());
+                Files.copy(zis, out, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                zis.closeEntry();
+            }
+        }
     }
+
+    // Returns the single top-level folder name if all entries share it; else null
+    private static String detectSingleRootDir(Path zipFile) throws Exception {
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zipFile.toFile())) {
+            String root = null;
+            var en = zf.entries();
+            while (en.hasMoreElements()) {
+                var e = en.nextElement();
+                String name = e.getName().replace('\\', '/');
+                // Skip empty
+                if (name.isBlank()) continue;
+                String top = name.split("/", 2)[0];
+                if (top.isBlank()) return null;
+                if (root == null) root = top;
+                else if (!root.equals(top)) return null;
+            }
+            // Only treat as a directory root if at least one entry is inside it
+            return root;
+        }
+    }
+
+    // Prevents Zip Slip
+    private static Path safeResolve(Path base, String entryName) {
+        Path out = base.resolve(entryName).normalize();
+        if (!out.startsWith(base)) throw new IllegalArgumentException("Blocked suspicious zip entry: " + entryName);
+        return out;
+    }
+
+    private static String sanitizeFolderName(String s) {
+        if (s == null) return "";
+        String clean = s.trim().replaceAll("[\\\\/:*?\"<>|]+", "_");
+        return clean.isBlank() ? "" : clean;
+    }
+
+    private static String stripExtSafe(String name, String fallback) {
+        int i = name.lastIndexOf('.');
+        String base = (i > 0) ? name.substring(0, i) : name;
+        base = sanitizeFolderName(base);
+        return base.isBlank() ? fallback : base;
+    }
+
+    private static Path ensureUniqueDir(Path parent, String baseName) {
+        Path p = parent.resolve(baseName);
+        if (!Files.exists(p)) return p;
+        int idx = 1;
+        while (true) {
+            Path cand = parent.resolve(baseName + "-" + idx);
+            if (!Files.exists(cand)) return cand;
+            idx++;
+        }
+    }
+
+    // Small helper to marshal back to client thread
+    private void runOnClient(Runnable r) {
+        if (this.client != null) this.client.execute(r);
+    }
+
 
     // Render
     @Override
@@ -480,11 +596,9 @@ public class CloudSaveManagerScreen extends Screen {
         int cx = this.width / 2;
         int top = this.height / 4;
 
-        // Title and quota
+        // Title and quota (quota line directly under the title, in grey)
         ctx.drawCenteredTextWithShadow(this.textRenderer, this.title, cx, 10, 0xFFFFFFFF);
-        if (!quotaLine.isEmpty()) {
-            ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(quotaLine), cx, top - 10, 0xFFAAAAAA);
-        }
+        ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(sm$quotaLineComputed()), cx, 22, 0xFFAAAAAA);
 
         // Columns
         int left = cx - 220;
@@ -507,8 +621,10 @@ public class CloudSaveManagerScreen extends Screen {
 
             // Selection highlight
             if (i == selectedIndex) {
-                int bg = 0x33FFFFFF;
-                ctx.fill(g.listX, ry - 2, g.listX + g.listW, ry + g.rowHeight - 4, bg);
+                int h = Math.max(1, g.rowHeight - 4);
+                int x1 = g.listX;
+                int x2 = g.listX + g.listW;
+                ctx.fill(x1, ry - 4, x2, ry - 1 + h, 0x66FFFFFF);
             }
 
             drawColText(ctx, safe(s.worldName), left, ry, 0xFFDDDDDD);
@@ -535,6 +651,49 @@ public class CloudSaveManagerScreen extends Screen {
             firstRenderLogged = true;
             SaveManagerMod.LOGGER.info("CloudSaveManager: first render; saves={}, page={}", saves.size(), currentPage);
         }
+    }
+
+    private String sm$quotaLineComputed() {
+        long used = sm$sumUsedBytes();
+        long left = Math.max(0L, QUOTA_LIMIT_BYTES - used);
+        // Use floor-rounded formatting to avoid showing "5.0 GB left" when it's < 5 GB
+        String usedStr = sm$formatBytesFloor(used);
+        String leftStr = sm$formatBytesFloor(left);
+        return String.format("%s of 5 GB (%s left)", usedStr, leftStr);
+    }
+
+    private static String sm$formatBytesFloor(long bytes) {
+        if (bytes < 0) bytes = 0;
+        final long KB = 1024L;
+        final long MB = KB * 1024L;
+        final long GB = MB * 1024L;
+        final long TB = GB * 1024L;
+
+        double value;
+        String unit;
+        if (bytes >= TB) { value = (double) bytes / TB; unit = "TB"; }
+        else if (bytes >= GB) { value = (double) bytes / GB; unit = "GB"; }
+        else if (bytes >= MB) { value = (double) bytes / MB; unit = "MB"; }
+        else if (bytes >= KB) { value = (double) bytes / KB; unit = "KB"; }
+        else { return bytes + " B"; }
+
+        // Floor to 1 decimal to avoid rounding up (e.g., 4.96 -> 4.9)
+        double floored = Math.floor(value * 10.0) / 10.0;
+        // Avoid "-0.0" or "0.0" oddities
+        if (floored >= 100 || Math.abs(floored - Math.rint(floored)) < 1e-9) {
+            return String.format("%.0f %s", floored, unit);
+        }
+        return String.format("%.1f %s", floored, unit);
+    }
+
+    private long sm$sumUsedBytes() {
+        long sum = 0L;
+        for (SaveItem s : saves) {
+            if (s != null) {
+                sum += Math.max(0L, s.fileSizeBytes);
+            }
+        }
+        return sum;
     }
 
     private Geometry computeGeometry() {
