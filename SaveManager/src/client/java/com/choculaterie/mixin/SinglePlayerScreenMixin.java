@@ -49,6 +49,7 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
     @Unique private ButtonWidget saveManagerLinkBtn; // small icon
     @Unique private ButtonWidget uploadSaveBtn;      // "Upload Save" action
+    @Unique private ButtonWidget cloudSavesBtn;
 
     @Unique private static final int ICON_SIZE = 20;
     @Unique private static final int GAP = 4;
@@ -63,18 +64,24 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     private void savemanager$init(CallbackInfo ci) {
         // Small link button next to the search field (👁/💾 style anchor)
         this.saveManagerLinkBtn = ButtonWidget.builder(
-                Text.literal("\uD83D\uDCBE"),
+                Text.literal("⚙"),
                 b -> this.client.setScreen(new AccountLinkingScreen((Screen)(Object)this))
         ).dimensions(0, 0, ICON_SIZE, ICON_SIZE).build();
         this.addDrawableChild(this.saveManagerLinkBtn);
 
         // Upload button placed just to the right of the icon; enabled only with a selected world
         this.uploadSaveBtn = ButtonWidget.builder(
-                Text.literal("Upload Save"),
+                Text.literal("\uD83D\uDCBE"),
                 b -> sm$startUploadSelectedWorld()
-        ).dimensions(0, 0, 110, ICON_SIZE).build();
+        ).dimensions(0, 0, 20, ICON_SIZE).build();
         this.uploadSaveBtn.active = false;
         this.addDrawableChild(this.uploadSaveBtn);
+
+        this.cloudSavesBtn = ButtonWidget.builder(
+                        Text.literal("\uD83D\uDCC1"),
+                        b -> this.client.setScreen(new com.choculaterie.gui.CloudSaveManagerScreen((Screen)(Object)this)))
+                .dimensions(0, 0, 20, ICON_SIZE).build();
+        this.addDrawableChild(this.cloudSavesBtn);
 
         // Per-frame lightweight updater: reposition buttons and toggle enabled state
         this.addDrawable((Drawable) this::savemanager$frameUpdate);
@@ -124,6 +131,13 @@ public abstract class SinglePlayerScreenMixin extends Screen {
             int uploadY = iconY;
             try { this.uploadSaveBtn.setPosition(uploadX, uploadY); } catch (Throwable ignored) {}
             this.uploadSaveBtn.visible = true;
+        }
+
+        if (this.cloudSavesBtn != null) {
+            int cloudX = iconX + ICON_SIZE + GAP + 20 + GAP; // after Upload button
+            int cloudY = iconY;
+            try { this.cloudSavesBtn.setPosition(cloudX, cloudY); } catch (Throwable ignored) {}
+            this.cloudSavesBtn.visible = true;
         }
     }
 

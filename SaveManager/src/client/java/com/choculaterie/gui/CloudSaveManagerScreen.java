@@ -1,0 +1,626 @@
+package com.choculaterie.gui;
+
+import com.choculaterie.SaveManagerMod;
+import com.choculaterie.network.NetworkManager;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.screen.ConfirmScreen;
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.PressableWidget;
+import net.minecraft.text.Text;
+
+import java.io.File;
+import java.io.FileReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+public class CloudSaveManagerScreen extends Screen {
+    private final Screen parent;
+    private final NetworkManager networkManager = new NetworkManager();
+
+    private boolean firstRenderLogged = false;
+    private boolean loading = true;
+    private String status = "Loading...";
+    private String quotaLine = "";
+
+    private final List<SaveItem> saves = new ArrayList<>();
+    private int currentPage = 0;
+    private static final int PAGE_SIZE = 6;
+
+    // Top controls
+    private ButtonWidget backBtn;
+    private ButtonWidget refreshBtn;
+    private ButtonWidget prevBtn;
+    private ButtonWidget nextBtn;
+
+    // Bottom action buttons
+    private ButtonWidget downloadBtn;
+    private ButtonWidget deleteBtn;
+
+    // Selection (global index in `saves`, -1 means none)
+    private int selectedIndex = -1;
+
+    // Invisible click areas for rows
+    private final List<PressableWidget> rowHitBoxes = new ArrayList<>();
+
+    public CloudSaveManagerScreen(Screen parent) {
+        super(Text.literal("Cloud Saves"));
+        this.parent = parent;
+    }
+
+    @Override
+    protected void init() {
+        int cx = this.width / 2;
+        int topY = this.height / 4;
+        int bottomY = this.height - 28;
+
+        // Top buttons
+        this.backBtn = ButtonWidget.builder(Text.literal("←"), b -> this.client.setScreen(parent))
+                .dimensions(10, 10, 20, 20).build();
+        this.addDrawableChild(backBtn);
+
+        this.refreshBtn = ButtonWidget.builder(Text.literal("\uD83D\uDD04"), b -> {
+            selectedIndex = -1;
+            fetchList();
+        }).dimensions(35, 10, 20, 20).build();
+        this.addDrawableChild(refreshBtn);
+
+        this.prevBtn = ButtonWidget.builder(Text.literal("<"), b -> {
+            if (currentPage > 0) {
+                currentPage--;
+                selectedIndex = -1;
+                this.clearAndInit();
+            }
+        }).dimensions(this.width - 55, bottomY, 20, 20).build();
+        this.addDrawableChild(prevBtn);
+
+        this.nextBtn = ButtonWidget.builder(Text.literal(">"), b -> {
+            if ((currentPage + 1) * PAGE_SIZE < saves.size()) {
+                currentPage++;
+                selectedIndex = -1;
+                this.clearAndInit();
+            }
+        }).dimensions(this.width - 30, bottomY, 20, 20).build();
+        this.addDrawableChild(nextBtn);
+
+        // Bottom action buttons
+
+        this.downloadBtn = ButtonWidget.builder(Text.literal("Download"), b -> {
+            SaveItem s = getSelected();
+            if (s != null) onDownload(s);
+        }).dimensions(cx - 110, bottomY, 100, 20).build();
+        this.addDrawableChild(downloadBtn);
+
+        this.deleteBtn = ButtonWidget.builder(Text.literal("Delete"), b -> {
+            SaveItem s = getSelected();
+            if (s != null) confirmDelete(s);
+        }).dimensions(cx + 10, bottomY, 100, 20).build();
+        this.addDrawableChild(deleteBtn);
+
+        // API key
+        String apiKey = loadApiKeyFromDisk();
+        if (apiKey == null || apiKey.isBlank()) {
+            loading = false;
+            status = "No API key configured";
+        } else {
+            networkManager.setApiKey(apiKey);
+            if (saves.isEmpty()) fetchList();
+        }
+
+        // Build row hit boxes for current page
+        buildRowHitBoxes();
+
+        // Update controls state
+        rebuildPagerState();
+        updateActionButtons();
+    }
+
+    @Override
+    public void resize(MinecraftClient client, int width, int height) {
+        super.resize(client, width, height);
+        // Re-init places and re-creates row hit boxes
+        this.clearAndInit();
+    }
+
+    private void fetchList() {
+        loading = true;
+        status = "Loading...";
+        updateActionButtons();
+        SaveManagerMod.LOGGER.info("CloudSaveManager: fetchList() start");
+
+        networkManager.listWorldSaves().whenComplete((json, err) -> {
+            if (err != null) {
+                SaveManagerMod.LOGGER.error("CloudSaveManager: list failed", err);
+                runOnClient(() -> {
+                    loading = false;
+                    status = "List failed";
+                    saves.clear();
+                    quotaLine = "";
+                    selectedIndex = -1;
+                    buildRowHitBoxes();
+                    rebuildPagerState();
+                    updateActionButtons();
+                });
+                return;
+            }
+
+            List<SaveItem> tmp = new ArrayList<>();
+            String newQuota = "";
+            try {
+                // Prefer top-level, then common containers like "result" or "meta"
+                com.google.gson.JsonArray arr = sm$findArray(json, "saves", "items", "data", "list", "worlds");
+                if (newQuota.isEmpty()) newQuota = sm$parseQuota(json);
+
+                if (arr == null && json.has("result") && json.get("result").isJsonObject()) {
+                    JsonObject result = json.getAsJsonObject("result");
+                    if (newQuota.isEmpty()) newQuota = sm$parseQuota(result);
+                    arr = sm$findArray(result, "saves", "items", "data", "list", "worlds");
+                }
+
+                if (arr == null && json.has("meta") && json.get("meta").isJsonObject()) {
+                    JsonObject meta = json.getAsJsonObject("meta");
+                    if (newQuota.isEmpty()) newQuota = sm$parseQuota(meta);
+                    if (arr == null) arr = sm$findArray(meta, "saves", "items", "data", "list", "worlds");
+                }
+
+                // Last resort: first array field found
+                if (arr == null) {
+                    for (var e : json.entrySet()) {
+                        if (e.getValue() != null && e.getValue().isJsonArray()) {
+                            arr = e.getValue().getAsJsonArray();
+                            break;
+                        }
+                        if (e.getValue() != null && e.getValue().isJsonObject() && arr == null) {
+                            for (var e2 : e.getValue().getAsJsonObject().entrySet()) {
+                                if (e2.getValue() != null && e2.getValue().isJsonArray()) {
+                                    arr = e2.getValue().getAsJsonArray();
+                                    break;
+                                }
+                            }
+                        }
+                        if (arr != null) break;
+                    }
+                }
+
+                if (arr != null) {
+                    for (int i = 0; i < arr.size(); i++) {
+                        if (!arr.get(i).isJsonObject()) continue;
+                        tmp.add(SaveItem.from(arr.get(i).getAsJsonObject()));
+                    }
+                }
+            } catch (Throwable parseEx) {
+                SaveManagerMod.LOGGER.error("CloudSaveManager: parse error", parseEx);
+                newQuota = "";
+            }
+
+            final String quotaOut = newQuota;
+            runOnClient(() -> {
+                saves.clear();
+                saves.addAll(tmp);
+                loading = false;
+                status = tmp.isEmpty() ? "No saves found" : "";
+                quotaLine = quotaOut == null ? "" : quotaOut;
+                selectedIndex = -1;
+                buildRowHitBoxes();
+                rebuildPagerState();
+                updateActionButtons();
+            });
+        });
+    }
+
+    // Replace the whole method
+    private static JsonArray sm$findArray(JsonObject obj, String... names) {
+        for (String n : names) {
+            if (!obj.has(n)) continue;
+            com.google.gson.JsonElement e = obj.get(n);
+            if (e == null) continue;
+            if (e.isJsonArray()) return e.getAsJsonArray();
+            if (e.isJsonObject()) {
+                JsonObject o = e.getAsJsonObject();
+                // common nested holder
+                if (o.has("items") && o.get("items").isJsonArray()) return o.getAsJsonArray("items");
+                if (o.has("saves") && o.get("saves").isJsonArray()) return o.getAsJsonArray("saves");
+            }
+        }
+        return null;
+    }
+
+    // Replace the whole method
+    private static String sm$getString(JsonObject obj, String... names) {
+        for (String n : names) {
+            if (!obj.has(n)) continue;
+            com.google.gson.JsonElement e = obj.get(n);
+            if (e == null) continue;
+            if (e.isJsonNull()) continue;
+            if (e.isJsonPrimitive()) {
+                var p = e.getAsJsonPrimitive();
+                if (p.isString()) return p.getAsString();
+                if (p.isNumber()) return String.valueOf(p.getAsLong());
+                if (p.isBoolean()) return String.valueOf(p.getAsBoolean());
+            } else if (e.isJsonObject()) {
+                JsonObject o = e.getAsJsonObject();
+                // common text carriers
+                if (o.has("text")) {
+                    String s = sm$getString(o, "text");
+                    if (!s.isEmpty()) return s;
+                }
+                if (o.has("value")) {
+                    String s = sm$getString(o, "value");
+                    if (!s.isEmpty()) return s;
+                }
+                if (o.has("iso")) {
+                    String s = sm$getString(o, "iso");
+                    if (!s.isEmpty()) return s;
+                }
+            } else if (e.isJsonArray() && e.getAsJsonArray().size() > 0) {
+                var first = e.getAsJsonArray().get(0);
+                if (first.isJsonPrimitive() && first.getAsJsonPrimitive().isString()) {
+                    return first.getAsString();
+                }
+            }
+        }
+        return "";
+    }
+
+    // Replace the whole method
+    private static long sm$getLong(JsonObject obj, String... names) {
+        for (String n : names) {
+            if (!obj.has(n)) continue;
+            com.google.gson.JsonElement e = obj.get(n);
+            if (e == null || e.isJsonNull()) continue;
+
+            // Direct primitive
+            if (e.isJsonPrimitive()) {
+                var p = e.getAsJsonPrimitive();
+                if (p.isNumber()) return p.getAsLong();
+                if (p.isString()) {
+                    String s = p.getAsString();
+                    // strip common separators/spaces; keep leading minus sign
+                    String digits = s.replaceAll("[_,\\s]", "");
+                    try {
+                        // Try exact long
+                        return Long.parseLong(digits);
+                    } catch (NumberFormatException ex) {
+                        // Extract contiguous digits if mixed text, e.g., "5368709120 bytes"
+                        String only = digits.replaceAll("[^0-9-]", "");
+                        if (!only.isEmpty()) {
+                            try { return Long.parseLong(only); } catch (NumberFormatException ignored) {}
+                        }
+                    }
+                }
+            }
+
+            // Nested common shapes
+            if (e.isJsonObject()) {
+                JsonObject o = e.getAsJsonObject();
+                // typical carriers for byte counts
+                long v = sm$getLong(o, "bytes", "value", "size", "sizeBytes", "length", "amount");
+                if (v != 0L) return v;
+            }
+
+            // Fallback: array first element
+            if (e.isJsonArray() && e.getAsJsonArray().size() > 0) {
+                var first = e.getAsJsonArray().get(0);
+                if (first.isJsonPrimitive() && first.getAsJsonPrimitive().isNumber()) {
+                    return first.getAsLong();
+                }
+            }
+        }
+        return 0L;
+    }
+
+    // Replace the whole method
+    private String sm$parseQuota(JsonObject obj) {
+        // 1) Direct text
+        String direct = sm$getString(obj, "quotaLine", "quotaText", "storageText");
+        if (!direct.isEmpty()) return direct;
+
+        // 2) quota object with bytes
+        if (obj.has("quota") && obj.get("quota").isJsonObject()) {
+            JsonObject q = obj.getAsJsonObject("quota");
+            long used = sm$getLong(q, "usedBytes", "used", "usageBytes", "bytesUsed", "current");
+            long total = sm$getLong(q, "totalBytes", "limitBytes", "total", "capacityBytes", "maxBytes", "limit");
+            if (used == 0 && q.has("used") && q.get("used").isJsonObject()) {
+                used = sm$getLong(q.getAsJsonObject("used"), "bytes", "value");
+            }
+            if (total == 0 && q.has("total") && q.get("total").isJsonObject()) {
+                total = sm$getLong(q.getAsJsonObject("total"), "bytes", "value", "limitBytes");
+            }
+            if (used > 0 || total > 0) {
+                return "Used " + formatBytes(used) + " of " + (total > 0 ? formatBytes(total) : "?");
+            }
+        }
+
+        // 3) usage object
+        if (obj.has("usage") && obj.get("usage").isJsonObject()) {
+            JsonObject q = obj.getAsJsonObject("usage");
+            long used = sm$getLong(q, "usedBytes", "used", "bytesUsed", "current");
+            long total = sm$getLong(q, "totalBytes", "limitBytes", "total", "capacityBytes", "maxBytes", "limit");
+            if (used > 0 || total > 0) {
+                return "Used " + formatBytes(used) + " of " + (total > 0 ? formatBytes(total) : "?");
+            }
+        }
+
+        return "";
+    }
+
+    // Replace the whole inner class
+    private static class SaveItem {
+        String id;
+        String worldName;
+        long fileSizeBytes;
+        String createdAt;
+        String updatedAt;
+
+        static SaveItem from(JsonObject o) {
+            SaveItem s = new SaveItem();
+            s.id = sm$getString(o, "id", "saveId", "guid");
+            s.worldName = sm$getString(o, "worldName", "name", "world", "title");
+            long size = sm$getLong(o, "sizeBytes", "fileSizeBytes", "fileSize", "size", "bytes", "length");
+            s.fileSizeBytes = size;
+            s.createdAt = sm$getString(o, "createdAt", "created", "created_on", "createdOn");
+            s.updatedAt = sm$getString(o, "updatedAt", "updated", "updated_on", "lastModified", "modifiedOn");
+            return s;
+        }
+    }
+
+    private void rebuildPagerState() {
+        if (prevBtn != null) prevBtn.active = currentPage > 0 && !loading;
+        if (nextBtn != null) nextBtn.active = ((currentPage + 1) * PAGE_SIZE) < saves.size() && !loading;
+    }
+
+    private SaveItem getSelected() {
+        if (selectedIndex < 0 || selectedIndex >= saves.size()) return null;
+        return saves.get(selectedIndex);
+    }
+
+    private void updateActionButtons() {
+        boolean enabled = getSelected() != null && !loading;
+        if (downloadBtn != null) downloadBtn.active = enabled;
+        if (deleteBtn != null) deleteBtn.active = enabled;
+    }
+
+    // Build invisible pressable boxes over each visible row (avoids overriding mouseClicked API)
+    private void buildRowHitBoxes() {
+        // Remove previous hitboxes from the screen
+        for (var w : rowHitBoxes) {
+            try { this.remove(w); } catch (Throwable ignored) {}
+        }
+        rowHitBoxes.clear();
+
+        Geometry g = computeGeometry();
+        int start = currentPage * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, saves.size());
+
+        for (int i = start; i < end; i++) {
+            final int globalIndex = i;
+            int ry = g.rowStartY + (i - start) * g.rowHeight;
+
+            ButtonWidget hit = ButtonWidget.builder(Text.literal(""), b -> {
+                selectedIndex = globalIndex;
+                status = "";
+                updateActionButtons();
+            }).dimensions(g.listX, ry - 2, g.listW, g.rowHeight + 4).build();
+
+            // Invisible but interactive
+            try { hit.setAlpha(0.0f); } catch (Throwable ignored) {}
+            hit.visible = true;
+            hit.active = true;
+
+            this.addDrawableChild(hit);
+            rowHitBoxes.add(hit);
+        }
+    }
+
+    private void confirmDelete(SaveItem s) {
+        Text title = Text.literal("Delete Cloud Save");
+        Text message = Text.literal("Are you sure you want to permanently delete \"" + safe(s.worldName) + "\"?");
+        this.client.setScreen(new ConfirmScreen(confirmed -> {
+            if (!confirmed) {
+                this.client.setScreen(this);
+                return;
+            }
+            loading = true;
+            status = "Deleting...";
+            updateActionButtons();
+            networkManager.deleteWorldSave(s.id).whenComplete((resp, err) -> runOnClient(() -> {
+                if (err != null) {
+                    SaveManagerMod.LOGGER.error("Delete failed", err);
+                    status = "Delete failed";
+                    loading = false;
+                    this.client.setScreen(this);
+                    return;
+                }
+                status = "Deleted";
+                loading = false;
+                selectedIndex = -1;
+                fetchList();
+                this.client.setScreen(this);
+            }));
+        }, title, message));
+    }
+
+    private void onDownload(SaveItem s) {
+        MinecraftClient mc = this.client;
+        if (mc == null) return;
+        loading = true;
+        status = "Downloading...";
+        updateActionButtons();
+        Path outDir = mc.runDirectory.toPath().resolve("cloud_downloads");
+        networkManager.downloadWorldSave(s.id, outDir).whenComplete((path, err) -> runOnClient(() -> {
+            if (err != null) {
+                SaveManagerMod.LOGGER.error("Download failed", err);
+                status = "Download failed";
+            } else {
+                status = "Saved to: " + path.getFileName();
+            }
+            loading = false;
+            updateActionButtons();
+        }));
+    }
+
+    private void runOnClient(Runnable r) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null) return;
+        mc.execute(r);
+    }
+
+    // Render
+    @Override
+    public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
+        super.render(ctx, mouseX, mouseY, delta);
+
+        try { ctx.disableScissor(); } catch (Throwable ignored) {}
+
+        int cx = this.width / 2;
+        int top = this.height / 4;
+
+        // Title and quota
+        ctx.drawCenteredTextWithShadow(this.textRenderer, this.title, cx, 10, 0xFFFFFFFF);
+        if (!quotaLine.isEmpty()) {
+            ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(quotaLine), cx, top - 10, 0xFFAAAAAA);
+        }
+
+        // Columns
+        int left = cx - 220;
+        int headerY = top + 10;
+        drawColText(ctx, "World", left, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Size", left + 220, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Created", left + 300, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Updated", left + 420, headerY, 0xFFFFFFFF);
+
+        Geometry g = computeGeometry();
+
+        // Clip rows
+        ctx.enableScissor(g.listX, g.listY, g.listX + g.listW, g.listY + g.listH);
+
+        int start = currentPage * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, saves.size());
+        for (int i = start; i < end; i++) {
+            SaveItem s = saves.get(i);
+            int ry = g.rowStartY + (i - start) * g.rowHeight;
+
+            // Selection highlight
+            if (i == selectedIndex) {
+                int bg = 0x33FFFFFF;
+                ctx.fill(g.listX, ry - 2, g.listX + g.listW, ry + g.rowHeight - 4, bg);
+            }
+
+            drawColText(ctx, safe(s.worldName), left, ry, 0xFFDDDDDD);
+            drawColText(ctx, formatBytes(s.fileSizeBytes), left + 220, ry, 0xFFDDDDDD);
+            drawColText(ctx, shortDate(s.createdAt), left + 300, ry, 0xFFDDDDDD);
+            drawColText(ctx, shortDate(s.updatedAt), left + 420, ry, 0xFFDDDDDD);
+
+            // Separator
+            ctx.fill(g.listX, ry + g.rowHeight - 5, g.listX + g.listW - 10, ry + g.rowHeight - 4, 0x22FFFFFF);
+        }
+
+        ctx.disableScissor();
+
+        // Status line
+        if (loading || !status.isEmpty()) {
+            ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(status), cx, this.height - 46, 0xFFFFFFFF);
+        }
+
+        // Keep states fresh
+        rebuildPagerState();
+        updateActionButtons();
+
+        if (!firstRenderLogged) {
+            firstRenderLogged = true;
+            SaveManagerMod.LOGGER.info("CloudSaveManager: first render; saves={}, page={}", saves.size(), currentPage);
+        }
+    }
+
+    private Geometry computeGeometry() {
+        int cx = this.width / 2;
+        int left = cx - 220;
+        int top = this.height / 4;
+        int headerY = top + 10;
+
+        int rowStartY = headerY + 20;
+        int rowHeight = 22;
+
+        int start = currentPage * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, saves.size());
+        int visible = Math.max(0, end - start);
+
+        int listX = left - 6;
+        int listY = rowStartY - 10;
+        int listW = 720;
+        int listH = Math.max(visible * rowHeight, rowHeight) + 12;
+        return new Geometry(listX, listY, listW, listH, rowStartY, rowHeight);
+    }
+
+    private record Geometry(int listX, int listY, int listW, int listH, int rowStartY, int rowHeight) {}
+
+
+    private void drawColText(DrawContext ctx, String s, int x, int y, int color) {
+        ctx.drawTextWithShadow(this.textRenderer, Text.literal(s), x, y, color);
+    }
+
+    private static String safe(String s) { return s == null ? "" : s; }
+
+    private static String formatBytes(long n) {
+        if (n < 1024) return n + " B";
+        int u = -1;
+        double d = n;
+        String[] units = {"KB", "MB", "GB", "TB"};
+        do { d /= 1024; u++; } while (d >= 1024 && u < units.length - 1);
+        return String.format(java.util.Locale.ROOT, "%.1f %s", d, units[u]);
+    }
+
+    private static String shortDate(String iso) {
+        if (iso == null) return "";
+        int t = iso.indexOf('T');
+        return t > 0 ? iso.substring(0, t) : iso;
+    }
+
+    private String loadApiKeyFromDisk() {
+        try {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc == null) return null;
+            File configDir = new File(mc.runDirectory, "config");
+            File configFile = new File(configDir, "save-manager-settings.json");
+            if (!configFile.exists()) return null;
+
+            try (FileReader reader = new FileReader(configFile)) {
+                com.google.gson.JsonObject json = new com.google.gson.Gson().fromJson(reader, com.google.gson.JsonObject.class);
+                if (json == null) return null;
+                if (json.has("encryptedApiToken")) {
+                    return decrypt(json.get("encryptedApiToken").getAsString());
+                }
+                if (json.has("apiToken")) {
+                    return json.get("apiToken").getAsString();
+                }
+            }
+        } catch (Exception e) {
+            SaveManagerMod.LOGGER.error("Error loading API key", e);
+        }
+        return null;
+    }
+
+    private String decrypt(String base64) throws Exception {
+        // Match the AES-GCM scheme used elsewhere
+        byte[] data = java.util.Base64.getDecoder().decode(base64);
+        if (data.length < 12 + 16) throw new IllegalArgumentException("Invalid data");
+        byte[] iv = new byte[12];
+        byte[] ct = new byte[data.length - 12];
+        System.arraycopy(data, 0, iv, 0, 12);
+        System.arraycopy(data, 12, ct, 0, ct.length);
+
+        javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+        javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(
+                java.security.MessageDigest.getInstance("SHA-256")
+                        .digest("SaveManagerSecKey.v1".getBytes(java.nio.charset.StandardCharsets.UTF_8)), "AES");
+        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, keySpec, new javax.crypto.spec.GCMParameterSpec(128, iv));
+        byte[] pt = cipher.doFinal(ct);
+        return new String(pt, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+}
