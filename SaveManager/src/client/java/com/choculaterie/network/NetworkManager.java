@@ -4,6 +4,9 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -11,6 +14,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -18,141 +24,157 @@ public class NetworkManager {
     private static final String BASE_URL = "https://localhost:7282";
     private static final String API_KEY_HEADER = "X-Save-Key";
 
+    // Dev-only: trust-all client to avoid PKIX with local self-signed certs
+    private static final HttpClient INSECURE_CLIENT;
+    static {
+        try {
+            TrustManager[] trustAllCerts = new TrustManager[]{
+                    new X509TrustManager() {
+                        public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+                        public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                        public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+                    }
+            };
+            SSLContext ssl = SSLContext.getInstance("TLS");
+            ssl.init(null, trustAllCerts, new SecureRandom());
+            INSECURE_CLIENT = HttpClient.newBuilder()
+                    .sslContext(ssl)
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .build();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to initialize HttpClient with custom SSL context", e);
+        }
+    }
+
     private final HttpClient httpClient;
     private final Gson gson;
     private String apiKey;
 
     public NetworkManager() {
-        this.httpClient = HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_2)
-                .build();
+        this.httpClient = INSECURE_CLIENT;
         this.gson = new Gson();
     }
 
-    public void setApiKey(String apiKey) {
-        this.apiKey = apiKey;
-    }
+    public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+    public String getApiKey() { return apiKey; }
 
-    public String getApiKey() {
-        return apiKey;
-    }
-
-    // Browser route for token generation (auth flow)
     public String getApiTokenGenerationUrl() {
+        // MVC view that issues/refreshes the Save Key
         return BASE_URL + "/api/SaveManagerAPI/GenerateSaveToken";
     }
 
-    // Lists all world saves for the authenticated user
     public CompletableFuture<JsonObject> listWorldSaves() {
         validateApiKey();
-
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/list"))
                 .header(API_KEY_HEADER, apiKey)
                 .GET()
                 .build();
-
-        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
                 .thenApply(this::handleJsonResponse);
     }
 
-    // Uploads a world save as a ZIP file
     public CompletableFuture<JsonObject> uploadWorldSave(String worldName, Path zipFilePath) throws IOException {
         validateApiKey();
 
-        String boundary = "----" + UUID.randomUUID();
-        byte[] worldNamePart = ("--" + boundary + "\r\n" +
-                "Content-Disposition: form-data; name=\"WorldName\"\r\n\r\n" +
-                worldName + "\r\n").getBytes();
+        String safeWorldName = (worldName == null || worldName.isBlank()) ? "world" : worldName;
+        String fileName = safeWorldName + ".zip";
+        byte[] fileBytes = Files.readAllBytes(zipFilePath);
 
-        byte[] fileHeaderPart = ("--" + boundary + "\r\n" +
-                "Content-Disposition: form-data; name=\"SaveFile\"; filename=\"" +
-                zipFilePath.getFileName() + "\"\r\n" +
-                "Content-Type: application/zip\r\n\r\n").getBytes();
+        String boundary = "----savemanager-" + UUID.randomUUID();
+        String partWorldName =
+                "--" + boundary + "\r\n" +
+                        "Content-Disposition: form-data; name=\"WorldName\"\r\n\r\n" +
+                        safeWorldName + "\r\n";
 
-        byte[] fileContent = Files.readAllBytes(zipFilePath);
-        byte[] endBoundary = ("\r\n--" + boundary + "--\r\n").getBytes();
+        String partFileHeader =
+                "--" + boundary + "\r\n" +
+                        "Content-Disposition: form-data; name=\"SaveFile\"; filename=\"" + fileName + "\"\r\n" +
+                        "Content-Type: application/zip\r\n\r\n";
 
-        byte[] requestBody = new byte[worldNamePart.length + fileHeaderPart.length +
-                fileContent.length + endBoundary.length];
+        byte[] meta = partWorldName.getBytes();
+        byte[] fileHdr = partFileHeader.getBytes();
+        byte[] closing = ("\r\n--" + boundary + "--\r\n").getBytes();
 
-        System.arraycopy(worldNamePart, 0, requestBody, 0, worldNamePart.length);
-        System.arraycopy(fileHeaderPart, 0, requestBody, worldNamePart.length, fileHeaderPart.length);
-        System.arraycopy(fileContent, 0, requestBody, worldNamePart.length + fileHeaderPart.length, fileContent.length);
-        System.arraycopy(endBoundary, 0, requestBody, worldNamePart.length + fileHeaderPart.length + fileContent.length, endBoundary.length);
+        byte[] body = new byte[meta.length + fileHdr.length + fileBytes.length + closing.length];
+        int p = 0;
+        System.arraycopy(meta, 0, body, p, meta.length); p += meta.length;
+        System.arraycopy(fileHdr, 0, body, p, fileHdr.length); p += fileHdr.length;
+        System.arraycopy(fileBytes, 0, body, p, fileBytes.length); p += fileBytes.length;
+        System.arraycopy(closing, 0, body, p, closing.length);
 
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/upload"))
-                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
                 .header(API_KEY_HEADER, apiKey)
-                .POST(HttpRequest.BodyPublishers.ofByteArray(requestBody))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();
 
-        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
                 .thenApply(this::handleJsonResponse);
     }
 
-    // Downloads a world save by ID
     public CompletableFuture<Path> downloadWorldSave(String saveId, Path destinationDirectory) {
         validateApiKey();
 
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/download/" + saveId))
                 .header(API_KEY_HEADER, apiKey)
                 .GET()
                 .build();
 
-        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                .thenApply(response -> {
-                    if (response.statusCode() >= 400) {
-                        throw new RuntimeException("Download failed with status code: " + response.statusCode());
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofByteArray())
+                .thenApply(resp -> {
+                    if (resp.statusCode() >= 400) {
+                        String body = new String(resp.body());
+                        throw new RuntimeException("Request failed: " + resp.statusCode() + " - " + body);
                     }
-
-                    String fileName = extractFileNameFromResponse(response);
-                    Path filePath = destinationDirectory.resolve(fileName);
-
+                    String fileName = extractFileNameFromResponse(resp);
                     try {
                         Files.createDirectories(destinationDirectory);
-                        Files.write(filePath, response.body());
-                        return filePath;
+                        Path out = destinationDirectory.resolve(fileName);
+                        Files.write(out, resp.body());
+                        return out;
                     } catch (IOException e) {
-                        throw new RuntimeException("Failed to save downloaded file", e);
+                        throw new RuntimeException(e);
                     }
                 });
     }
 
-    // Deletes a world save by ID
     public CompletableFuture<JsonObject> deleteWorldSave(String saveId) {
         validateApiKey();
 
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/delete/" + saveId))
                 .header(API_KEY_HEADER, apiKey)
                 .DELETE()
                 .build();
 
-        return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
                 .thenApply(this::handleJsonResponse);
     }
 
-    // Helpers
     private void validateApiKey() {
         if (apiKey == null || apiKey.isEmpty()) {
-            throw new IllegalStateException("API key not set. Please set an API key before making requests.");
+            throw new IllegalStateException("API key is not set");
         }
     }
 
     private JsonObject handleJsonResponse(HttpResponse<String> response) {
         if (response.statusCode() >= 400) {
-            throw new RuntimeException("Request failed with status code: " + response.statusCode() +
-                    ", Response: " + response.body());
+            throw new RuntimeException("Request failed: " + response.statusCode() + " - " + response.body());
         }
-        return JsonParser.parseString(response.body()).getAsJsonObject();
+        // Guard: if we accidentally hit an HTML page (e.g., wrong route/login page), fail clearly
+        Optional<String> ct = response.headers().firstValue("Content-Type");
+        String body = response.body();
+        if (ct.map(s -> s.contains("text/html")).orElse(false) || body.startsWith("<!DOCTYPE")) {
+            throw new RuntimeException("Unexpected HTML response from server. Check the API URL.");
+        }
+        return JsonParser.parseString(body).getAsJsonObject();
     }
 
     private String extractFileNameFromResponse(HttpResponse<byte[]> response) {
         String defaultName = "world_save.zip";
-
         return response.headers()
                 .firstValue("Content-Disposition")
                 .map(header -> {
@@ -161,7 +183,8 @@ public class NetworkManager {
                         int endIndex = header.indexOf(";", startIndex);
                         if (endIndex == -1) endIndex = header.length();
                         String fileName = header.substring(startIndex, endIndex)
-                                .replace("\"", "").trim();
+                                .replace("\"", "")
+                                .trim();
                         return fileName.isEmpty() ? defaultName : fileName;
                     }
                     return defaultName;

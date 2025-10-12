@@ -3,9 +3,12 @@
   "minVersion": "0.8",
   "package": "com.choculaterie.mixin",
   "compatibilityLevel": "JAVA_17",
+  "refmap": "savemanager.refmap.json",
   "client": [
-    "SinglePlayerScreenMixin"
+    "SinglePlayerScreenMixin",
+    "EntryListWidgetAccessor"
   ],
+  "mixins": [],
   "injectors": {
     "defaultRequire": 1
   }
