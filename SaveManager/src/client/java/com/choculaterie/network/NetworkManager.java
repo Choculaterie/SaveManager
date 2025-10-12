@@ -96,7 +96,13 @@ public class NetworkManager {
                 .thenApply(this::handleJsonResponse);
     }
 
+    // Keep the two-arg convenience method that delegates to the new overload
     public CompletableFuture<JsonObject> uploadWorldSave(String worldName, Path zipFilePath) throws IOException {
+        return uploadWorldSave(worldName, zipFilePath, null);
+    }
+
+    // New overload that reports progress via the provided BiConsumer (uploadedBytes, totalBytes)
+    public CompletableFuture<JsonObject> uploadWorldSave(String worldName, Path zipFilePath, BiConsumer<Long, Long> progressCallback) throws IOException {
         validateApiKey();
 
         String safeWorldName = (worldName == null || worldName.isBlank()) ? "world" : worldName;
@@ -150,9 +156,11 @@ public class NetworkManager {
                 // Try to set fixed-length streaming mode using the file size + overhead so the
                 // server gets a Content-Length header (some servers reject chunked uploads).
                 boolean usingFixedLength = false;
+                long fileSize = -1L;
+                long total = -1L;
                 try {
-                    long fileSize = Files.size(zipFilePath);
-                    long total = (long) metaBytes.length + (long) fileHdrBytes.length + fileSize + (long) closingBytes.length;
+                    fileSize = Files.size(zipFilePath);
+                    total = (long) metaBytes.length + (long) fileHdrBytes.length + fileSize + (long) closingBytes.length;
                     try {
                         conn.setFixedLengthStreamingMode(total);
                         usingFixedLength = true;
@@ -169,6 +177,8 @@ public class NetworkManager {
                 } catch (Throwable t) {
                     // Could not compute file size or set fixed-length mode; fall back to chunked streaming
                     usingFixedLength = false;
+                    fileSize = -1L;
+                    total = -1L;
                 }
 
                 if (!usingFixedLength) {
@@ -176,6 +186,11 @@ public class NetworkManager {
                     try {
                         conn.setChunkedStreamingMode(0);
                     } catch (Throwable ignored) {}
+                }
+
+                // If caller provided a progress callback and we know total, emit initial 0 total
+                if (progressCallback != null) {
+                    try { progressCallback.accept(0L, total); } catch (Throwable ignored) {}
                 }
 
                 try (OutputStream rawOut = conn.getOutputStream();
@@ -191,9 +206,14 @@ public class NetworkManager {
                     // an informative exception so calling code can log it.
                     byte[] buffer = new byte[64 * 1024]; // 64 KB buffer for faster throughput
                     int read;
+                    long uploaded = 0L;
                     while ((read = fileIn.read(buffer)) != -1) {
                         try {
                             out.write(buffer, 0, read);
+                            uploaded += read;
+                            if (progressCallback != null) {
+                                try { progressCallback.accept(uploaded, (total > 0) ? total : fileSize); } catch (Throwable ignored) {}
+                            }
                         } catch (IOException io) {
                             // Try to get more information from the server's error stream or response code
                             String serverMsg = "";

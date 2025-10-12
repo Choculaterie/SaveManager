@@ -46,7 +46,7 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     protected SinglePlayerScreenMixin(Text title) { super(title); }
 
     // Vanilla search field; we anchor our buttons next to it (same as your icon).
-    @Shadow private TextFieldWidget searchBox;
+    @Shadow protected TextFieldWidget searchBox;
 
     @Unique private ButtonWidget saveManagerLinkBtn; // small icon
     @Unique private ButtonWidget uploadSaveBtn;      // "Upload Save" action
@@ -61,6 +61,19 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     @Unique private static final int GCM_TAG_BITS = 128;
 
     @Unique private final NetworkManager savemanager$net = new NetworkManager();
+
+    // Upload UI / progress state (mirrors CloudSaveManagerScreen ActiveOp shape)
+    @Unique private static volatile boolean upActive = false;
+    @Unique private static volatile boolean upZipping = false;
+    @Unique private static volatile long upUploaded = 0L;
+    @Unique private static volatile long upTotal = -1L;
+    @Unique private static volatile long upStartNanos = 0L;
+    @Unique private static volatile long upLastTickNanos = 0L;
+    @Unique private static volatile long upLastBytes = 0L;
+    @Unique private static volatile double upSpeedBps = 0.0;
+
+    @Unique
+    private static boolean sm$isUploading() { return upActive; }
 
     // Only inject into init; avoid render/tick mixin signature issues
     @Inject(method = "init", at = @At("RETURN"))
@@ -94,7 +107,98 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     private void savemanager$frameUpdate(DrawContext ctx, int mouseX, int mouseY, float delta) {
         savemanager$repositionButtons();
         if (this.uploadSaveBtn != null) {
-            this.uploadSaveBtn.active = sm$hasSelection();
+            // Disable upload button while zipping/uploading
+            this.uploadSaveBtn.active = sm$hasSelection() && !sm$isUploading();
+        }
+
+        // Draw overlay status when uploading/zipping
+        if (sm$isUploading()) {
+            int cx = this.width / 2;
+            int baseY = this.height - 60;
+            int statusY = baseY;
+            if (upZipping) {
+                // Draw "Zipping..." and spinner similar to CloudSaveManagerScreen
+                ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("Zipping..."), cx, statusY, 0xFFFFFFFF);
+
+                int radius = 8;
+                int dots = 12;
+                int cx0 = this.width / 2;
+                int cy0 = statusY + 24;
+                long t = System.currentTimeMillis();
+                int head = (int)((t / 100) % dots);
+                for (int i = 0; i < dots; i++) {
+                    double ang = (2 * Math.PI * i) / dots;
+                    int dx = (int)Math.round(Math.cos(ang) * radius);
+                    int dy = (int)Math.round(Math.sin(ang) * radius);
+                    int x = cx0 + dx;
+                    int y = cy0 + dy;
+                    int dist = (i - head + dots) % dots;
+                    int alpha = switch (dist) {
+                        case 0 -> 0xFF;
+                        case 1 -> 0xCC;
+                        case 2 -> 0x99;
+                        case 3 -> 0x66;
+                        default -> 0x33;
+                    };
+                    int col = (alpha << 24) | 0xCCCCCC;
+                    ctx.fill(x - 1, y - 1, x + 2, y + 2, col);
+                }
+            } else {
+                // Upload progress bar phase
+                long uploaded = upUploaded;
+                long total = upTotal;
+                double speed = upSpeedBps;
+
+                if (total > 0 && uploaded >= 0) {
+                    int barW = 360;
+                    int barH = 8;
+                    int bx = cx - (barW / 2);
+                    int by = statusY + 14;
+
+                    ctx.fill(bx, by, bx + barW, by + barH, 0xFF444444);
+                    double frac = Math.min(1.0, (double) uploaded / total);
+                    int filled = (int) (barW * frac);
+                    ctx.fill(bx, by, bx + filled, by + barH, 0xFFCCCCCC);
+
+                    int pct = (int) Math.min(100, Math.floor((uploaded * 100.0) / total));
+                    ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(pct + "%"), cx, by - 10, 0xFFFFFFFF);
+
+                    String info = formatBytes(uploaded) + " / " + formatBytes(total);
+                    if (speed > 1) {
+                        String sp = formatBytes((long) speed) + "/s";
+                        long remaining = Math.max(0L, total - uploaded);
+                        long etaSec = Math.max(0L, (long) Math.ceil(remaining / Math.max(1.0, speed)));
+                        info += " • " + sp + " • ETA " + formatDurationShort(etaSec);
+                    }
+                    ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(info), cx, by + barH + 2, 0xFFCCCCCC);
+                } else {
+                    // Unknown total -> spinner with "Uploading..."
+                    ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("Uploading..."), cx, statusY, 0xFFFFFFFF);
+                    int radius = 8;
+                    int dots = 12;
+                    int cx0 = this.width / 2;
+                    int cy0 = statusY + 24;
+                    long t = System.currentTimeMillis();
+                    int head = (int)((t / 100) % dots);
+                    for (int i = 0; i < dots; i++) {
+                        double ang = (2 * Math.PI * i) / dots;
+                        int dx = (int)Math.round(Math.cos(ang) * radius);
+                        int dy = (int)Math.round(Math.sin(ang) * radius);
+                        int x = cx0 + dx;
+                        int y = cy0 + dy;
+                        int dist = (i - head + dots) % dots;
+                        int alpha = switch (dist) {
+                            case 0 -> 0xFF;
+                            case 1 -> 0xCC;
+                            case 2 -> 0x99;
+                            case 3 -> 0x66;
+                            default -> 0x33;
+                        };
+                        int col = (alpha << 24) | 0xCCCCCC;
+                        ctx.fill(x - 1, y - 1, x + 2, y + 2, col);
+                    }
+                }
+            }
         }
     }
 
@@ -310,9 +414,44 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         // Reusable upload action as a lambda so we can call it from multiple branches
         Runnable doUpload = () -> {
             try {
-                savemanager$net.uploadWorldSave(origWorldName, zipFinal).whenComplete((json, uploadErr) -> {
+                // Transition out of zipping phase into uploading phase
+                upZipping = false;
+                upActive = true;
+                try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
+
+                // Use the new overload with progress callback so we can update UI
+                savemanager$net.uploadWorldSave(origWorldName, zipFinal, (sent, total) -> {
+                    // Update upload state
+                    upUploaded = Math.max(0L, sent);
+                    if (total > 0) upTotal = total;
+
+                    long now = System.nanoTime();
+                    long dtNs = now - upLastTickNanos;
+                    long dBytes = upUploaded - upLastBytes;
+                    if (dtNs > 50_000_000L) {
+                        double instBps = dBytes > 0 ? (dBytes * 1_000_000_000.0) / dtNs : 0.0;
+                        double alpha = 0.2;
+                        upSpeedBps = upSpeedBps <= 0 ? instBps : (alpha * instBps + (1 - alpha) * upSpeedBps);
+                        upLastTickNanos = now;
+                        upLastBytes = upUploaded;
+                    }
+
+                    // ensure UI updates on client thread
+                    try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
+                }).whenComplete((json, uploadErr) -> {
                     try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+
+                    // Clear upload state on client thread
                     this.client.execute(() -> {
+                        upActive = false;
+                        upZipping = false;
+                        upUploaded = 0L;
+                        upTotal = -1L;
+                        upStartNanos = 0L;
+                        upLastBytes = 0L;
+                        upLastTickNanos = 0L;
+                        upSpeedBps = 0.0;
+
                         if (uploadErr != null) {
                             SaveManagerMod.LOGGER.error("(savemanager) Upload failed for \"{}\"", origWorldName, uploadErr);
                             this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
@@ -331,6 +470,9 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                 this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
                         Text.literal("Upload Failed"),
                         Text.literal("Upload failed: " + safeErrMessage(t)))));
+                // Ensure state cleared
+                upActive = false;
+                upZipping = false;
             }
         };
 
@@ -368,6 +510,9 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                     if (!confirmed) {
                         // Cancelled: return to world list and clean up temp zip
                         try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+                        // Clear upload state (user cancelled)
+                        upActive = false;
+                        upZipping = false;
                         this.client.setScreen((SelectWorldScreen)(Object)this);
                         return;
                     }
@@ -512,12 +657,26 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                 return;
             }
 
+            // Mark zipping/uploading state BEFORE zipping so UI shows spinner
+            upActive = true;
+            upZipping = true;
+            upUploaded = 0L;
+            upTotal = -1L;
+            upStartNanos = System.nanoTime();
+            upLastTickNanos = upStartNanos;
+            upLastBytes = 0L;
+            upSpeedBps = 0.0;
+            try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
+
             // Zip the world
             Path zip = null;
             try {
                 zip = sm$zipWorld(worldDir, worldName == null ? "world" : worldName.replaceAll("[\\\\/:*?\"<>|]+", "_"));
             } catch (Exception e) {
                 SaveManagerMod.LOGGER.error("(savemanager) Failed zipping world", e);
+                // Clear state and show error
+                upActive = false;
+                upZipping = false;
                 this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
                         Text.literal("Upload Failed"), Text.literal("Failed to prepare world zip"))));
                 return;
@@ -531,11 +690,15 @@ public abstract class SinglePlayerScreenMixin extends Screen {
             } catch (Throwable e) {
                 try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
                 SaveManagerMod.LOGGER.error("(savemanager) Upload errored", e);
+                upActive = false;
+                upZipping = false;
                 this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
                         Text.literal("Upload Failed"), Text.literal("Upload error: " + safeErrMessage(e)))));
             }
         } catch (Throwable t) {
             SaveManagerMod.LOGGER.error("(savemanager) Unexpected error in upload flow", t);
+            upActive = false;
+            upZipping = false;
         }
     }
 
@@ -571,5 +734,25 @@ public abstract class SinglePlayerScreenMixin extends Screen {
             }
         }
         return "";
+    }
+
+    @Unique
+    private static String formatDurationShort(long seconds) {
+        if (seconds <= 0) return "0s";
+        long h = seconds / 3600;
+        long m = (seconds % 3600) / 60;
+        long s = seconds % 60;
+        if (h > 0) return String.format("%dh %02dm", h, m);
+        if (m > 0) return String.format("%dm %02ds", m, s);
+        return String.format("%ds", s);
+    }
+
+    @Unique
+    private static String formatBytes(long b) {
+        if (b < 1024) return b + " B";
+        int unit = 1024;
+        int exp = (int) (Math.log(b) / Math.log(unit));
+        String pre = "KMGTPE".charAt(Math.min(exp - 1, 5)) + "";
+        return String.format("%.1f %sB", b / Math.pow(unit, exp), pre);
     }
 }

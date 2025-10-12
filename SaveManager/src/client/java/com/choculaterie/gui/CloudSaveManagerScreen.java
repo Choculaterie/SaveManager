@@ -674,9 +674,19 @@ public class CloudSaveManagerScreen extends Screen {
         try { ctx.disableScissor(); } catch (Throwable ignored) {}
 
         int cx = this.width / 2;
+        int top = this.height / 4;
 
         ctx.drawCenteredTextWithShadow(this.textRenderer, this.title, cx, 10, 0xFFFFFFFF);
         ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(sm$quotaLineComputed()), cx, 22, 0xFFAAAAAA);
+
+
+        // Columns
+        int left = cx - 220;
+        int headerY = top + 10;
+        drawColText(ctx, "World", left, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Size", left + 220, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Created", left + 300, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Updated", left + 420, headerY, 0xFFFFFFFF);
 
         Geometry g = computeGeometry();
         ctx.enableScissor(g.listX, g.listY, g.listX + g.listW, g.listY + g.listH);
@@ -694,7 +704,6 @@ public class CloudSaveManagerScreen extends Screen {
                 ctx.fill(x1, ry - 4, x2, ry - 1 + h, 0x66FFFFFF);
             }
 
-            int left = cx - 220;
             drawColText(ctx, safe(s.worldName), left, ry, 0xFFDDDDDD);
             drawColText(ctx, formatBytes(s.fileSizeBytes), left + 220, ry, 0xFFDDDDDD);
             drawColText(ctx, shortDate(s.createdAt), left + 300, ry, 0xFFDDDDDD);
