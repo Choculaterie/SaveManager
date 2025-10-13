@@ -33,6 +33,8 @@ public class NetworkManager {
     private static final String BASE_URL = "https://choculaterie.com";
     private static final String API_KEY_HEADER = "X-Save-Key";
 
+    private static final long LARGE_UPLOAD_THRESHOLD = 99L * 1024 * 1024; // 99 MiB
+
     // Dev-only: trust-all client to avoid PKIX with local self-signed certs
     private static final HttpClient INSECURE_CLIENT;
     // For HttpsURLConnection (used by our streaming upload path) - dev-only trust-all
@@ -101,164 +103,117 @@ public class NetworkManager {
         return uploadWorldSave(worldName, zipFilePath, null);
     }
 
-    // New overload that reports progress via the provided BiConsumer (uploadedBytes, totalBytes)
     public CompletableFuture<JsonObject> uploadWorldSave(String worldName, Path zipFilePath, BiConsumer<Long, Long> progressCallback) throws IOException {
         validateApiKey();
 
         String safeWorldName = (worldName == null || worldName.isBlank()) ? "world" : worldName;
         String fileName = safeWorldName + ".zip";
         String boundary = "----savemanager-" + UUID.randomUUID();
+        final String CRLF = "\r\n";
+
+        long fileSize = Files.size(zipFilePath);
+        String uploadBase = (fileSize > LARGE_UPLOAD_THRESHOLD) ? "https://upload.choculaterie.com" : BASE_URL;
+
+        // Build multipart preamble and closing with exact bytes (UTF-8)
+        String partWorldName =
+                "--" + boundary + CRLF +
+                        "Content-Disposition: form-data; name=\"WorldName\"" + CRLF + CRLF +
+                        safeWorldName + CRLF;
+
+        String partFileHeader =
+                "--" + boundary + CRLF +
+                        "Content-Disposition: form-data; name=\"SaveFile\"; filename=\"" + fileName + "\"" + CRLF +
+                        "Content-Type: application/zip" + CRLF + CRLF;
+
+        byte[] preamble = (partWorldName + partFileHeader).getBytes(StandardCharsets.UTF_8);
+        byte[] closing = (CRLF + "--" + boundary + "--" + CRLF).getBytes(StandardCharsets.UTF_8);
+
+        long contentLength = preamble.length + fileSize + closing.length;
 
         return CompletableFuture.supplyAsync(() -> {
             HttpURLConnection conn = null;
             try {
-                URL url = new URL(BASE_URL + "/api/SaveManagerAPI/upload");
+                URL url = new URL(uploadBase + "/api/SaveManagerAPI/upload");
                 conn = (HttpURLConnection) url.openConnection();
-                // If it's HTTPS, apply the insecure SSL socket factory + hostname verifier for dev
-                if (conn instanceof HttpsURLConnection) {
+                if (conn instanceof HttpsURLConnection https) {
                     try {
-                        ((HttpsURLConnection) conn).setSSLSocketFactory(INSECURE_SSLSF);
-                        ((HttpsURLConnection) conn).setHostnameVerifier(INSECURE_HV);
+                        https.setSSLSocketFactory(INSECURE_SSLSF);
+                        https.setHostnameVerifier(INSECURE_HV);
                     } catch (Throwable ignored) {}
                 }
+
                 conn.setDoOutput(true);
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty(API_KEY_HEADER, apiKey);
                 conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-                // Ask server to respond with 100-Continue so we can detect rejections before sending large body
+                conn.setRequestProperty("Accept", "application/json");
                 conn.setRequestProperty("Expect", "100-continue");
-
-                // Determine the multipart pieces and total size so we can send a Content-Length
-                // header (preferred for some servers). If computing size fails or the runtime
-                // doesn't support fixed-length streaming, fall back to chunked mode.
-
-                // Optional: sensible timeouts (increase read timeout for large uploads)
                 conn.setConnectTimeout(30_000);
-                conn.setReadTimeout(600_000); // 10 minutes
+                conn.setReadTimeout(600_000);
 
-                // Prepare the multipart pieces as bytes (preamble and closing only).
-                String partWorldName =
-                        "--" + boundary + "\r\n" +
-                                "Content-Disposition: form-data; name=\"WorldName\"\r\n\r\n" +
-                                safeWorldName + "\r\n";
-
-                String partFileHeader =
-                        "--" + boundary + "\r\n" +
-                                "Content-Disposition: form-data; name=\"SaveFile\"; filename=\"" + fileName + "\"\r\n" +
-                                "Content-Type: application/zip\r\n\r\n";
-
-                String closing = "\r\n--" + boundary + "--\r\n";
-
-                byte[] metaBytes = partWorldName.getBytes(StandardCharsets.UTF_8);
-                byte[] fileHdrBytes = partFileHeader.getBytes(StandardCharsets.UTF_8);
-                byte[] closingBytes = closing.getBytes(StandardCharsets.UTF_8);
-
-                // Try to set fixed-length streaming mode using the file size + overhead so the
-                // server gets a Content-Length header (some servers reject chunked uploads).
-                boolean usingFixedLength = false;
-                long fileSize = -1L;
-                long total = -1L;
-                try {
-                    fileSize = Files.size(zipFilePath);
-                    total = (long) metaBytes.length + (long) fileHdrBytes.length + fileSize + (long) closingBytes.length;
-                    try {
-                        conn.setFixedLengthStreamingMode(total);
-                        usingFixedLength = true;
-                    } catch (NoSuchMethodError | IllegalArgumentException e) {
-                        // Older runtimes may not support the long overload; try int overload if safe
-                        if (total <= Integer.MAX_VALUE) {
-                            conn.setFixedLengthStreamingMode((int) total);
-                            usingFixedLength = true;
-                        } else {
-                            // Can't set fixed length; fall back to chunked below
-                            usingFixedLength = false;
-                        }
-                    }
-                } catch (Throwable t) {
-                    // Could not compute file size or set fixed-length mode; fall back to chunked streaming
-                    usingFixedLength = false;
-                    fileSize = -1L;
-                    total = -1L;
-                }
-
-                if (!usingFixedLength) {
-                    // Fall back to chunked streaming (no Content-Length)
-                    try {
-                        conn.setChunkedStreamingMode(0);
-                    } catch (Throwable ignored) {}
-                }
-
-                // If caller provided a progress callback and we know total, emit initial 0 total
-                if (progressCallback != null) {
-                    try { progressCallback.accept(0L, total); } catch (Throwable ignored) {}
-                }
+                // Fixed-length streaming so proxies like Cloudflare do not buffer chunked uploads
+                conn.setFixedLengthStreamingMode(contentLength);
 
                 try (OutputStream rawOut = conn.getOutputStream();
                      BufferedOutputStream out = new BufferedOutputStream(rawOut);
-                     InputStream fileIn = Files.newInputStream(zipFilePath)) {
+                     InputStream in = Files.newInputStream(zipFilePath)) {
 
-                    // Write the WorldName part then file header
-                    out.write(metaBytes);
-                    out.write(fileHdrBytes);
+                    // Write preamble (not counted toward progress)
+                    out.write(preamble);
                     out.flush();
 
-                    // Stream the file content in small chunks; handle IO errors gracefully with
-                    // an informative exception so calling code can log it.
-                    byte[] buffer = new byte[64 * 1024]; // 64 KB buffer for faster throughput
-                    int read;
-                    long uploaded = 0L;
-                    while ((read = fileIn.read(buffer)) != -1) {
-                        try {
-                            out.write(buffer, 0, read);
-                            uploaded += read;
-                            if (progressCallback != null) {
-                                try { progressCallback.accept(uploaded, (total > 0) ? total : fileSize); } catch (Throwable ignored) {}
-                            }
-                        } catch (IOException io) {
-                            // Try to get more information from the server's error stream or response code
-                            String serverMsg = "";
-                            try {
-                                int code = -1;
-                                try { code = conn.getResponseCode(); } catch (Throwable ignored) {}
-                                InputStream err = null;
-                                try { err = conn.getErrorStream(); } catch (Throwable ignored) {}
-                                if (err != null) {
-                                    try (InputStream e = err) {
-                                        byte[] eb = e.readAllBytes();
-                                        serverMsg = new String(eb, StandardCharsets.UTF_8);
-                                    } catch (Throwable ignored) {}
-                                }
-                                String codePart = code == -1 ? "" : ("HTTP/" + code + " ");
-                                throw new IOException(codePart + "Error writing request body to server while streaming file. Server message: " + serverMsg, io);
-                            } catch (IOException re) {
-                                throw re;
-                            } catch (Throwable t) {
-                                throw new IOException("Error writing request body to server while streaming file and failed to read error stream", io);
-                            }
-                        }
+                    // Stream file content with progress (only count the file bytes)
+                    byte[] buf = new byte[64 * 1024];
+                    long sentFileBytes = 0L;
+                    if (progressCallback != null) progressCallback.accept(0L, fileSize);
+
+                    int r;
+                    while ((r = in.read(buf)) != -1) {
+                        out.write(buf, 0, r);
+                        sentFileBytes += r;
+                        if (progressCallback != null) progressCallback.accept(sentFileBytes, fileSize);
                     }
+
+                    // Write closing (not counted toward progress)
+                    out.write(closing);
                     out.flush();
 
-                    // Write closing boundary
-                    out.write(closingBytes);
-                    out.flush();
+                    // Ensure final 100%
+                    if (progressCallback != null) progressCallback.accept(fileSize, fileSize);
                 }
 
                 int status = conn.getResponseCode();
                 InputStream respStream = (status >= 400) ? conn.getErrorStream() : conn.getInputStream();
-                if (respStream == null) respStream = new ByteArrayInputStream(new byte[0]);
-
-                String body = new String(respStream.readAllBytes(), StandardCharsets.UTF_8);
-
-                if (status >= 400) {
-                    throw new RuntimeException("Upload failed: " + status + " - " + body);
+                String body;
+                if (respStream != null) {
+                    try (respStream) {
+                        body = new String(respStream.readAllBytes(), StandardCharsets.UTF_8);
+                    }
+                } else {
+                    body = "";
                 }
 
-                return JsonParser.parseString(body).getAsJsonObject();
+                if (status >= 400) {
+                    throw new RuntimeException("Request failed: " + status + " - " + body);
+                }
+
+                if (body == null || body.isBlank()) {
+                    return new JsonObject();
+                }
+                try {
+                    return JsonParser.parseString(body).getAsJsonObject();
+                } catch (Exception parseEx) {
+                    // Fallback if server returns non-object JSON
+                    JsonObject obj = new JsonObject();
+                    obj.addProperty("raw", body);
+                    return obj;
+                }
             } catch (Exception e) {
                 throw new RuntimeException(e);
             } finally {
-                if (conn != null) conn.disconnect();
+                if (conn != null) {
+                    try { conn.disconnect(); } catch (Throwable ignored) {}
+                }
             }
         });
     }
