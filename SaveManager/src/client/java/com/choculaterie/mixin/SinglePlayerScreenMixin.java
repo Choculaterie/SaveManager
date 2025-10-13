@@ -284,7 +284,41 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                 long total = upTotal;
                 double speed = upSpeedBps;
 
-                if (total > 0 && uploaded >= 0) {
+                // Detect end-of-upload stall: >=99% and no progress callback for a while
+                boolean knownTotals = total > 0 && uploaded >= 0;
+                boolean nearlyDone = knownTotals && uploaded < total && uploaded >= Math.max(0L, (long)Math.floor(total * 0.99));
+                long nowNs = System.nanoTime();
+                long sinceLastProgressNs = (upLastTickNanos > 0L) ? (nowNs - upLastTickNanos) : Long.MAX_VALUE;
+                boolean finishingStall = nearlyDone && sinceLastProgressNs > 1_500_000_000L; // ~1.5s
+
+                if (finishingStall) {
+                    // Show "Finishing..." with spinner (same style as zipping)
+                    ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal("Finishing..."), cx, statusY, 0xFFFFFFFF);
+
+                    int radius = 8;
+                    int dots = 12;
+                    int cx0 = this.width / 2;
+                    int cy0 = statusY + 24;
+                    long t = System.currentTimeMillis();
+                    int head = (int)((t / 100) % dots);
+                    for (int i = 0; i < dots; i++) {
+                        double ang = (2 * Math.PI * i) / dots;
+                        int dx = (int)Math.round(Math.cos(ang) * radius);
+                        int dy = (int)Math.round(Math.sin(ang) * radius);
+                        int x = cx0 + dx;
+                        int y = cy0 + dy;
+                        int dist = (i - head + dots) % dots;
+                        int alpha = switch (dist) {
+                            case 0 -> 0xFF;
+                            case 1 -> 0xCC;
+                            case 2 -> 0x99;
+                            case 3 -> 0x66;
+                            default -> 0x33;
+                        };
+                        int col = (alpha << 24) | 0xCCCCCC;
+                        ctx.fill(x - 1, y - 1, x + 2, y + 2, col);
+                    }
+                } else if (knownTotals) {
                     int barW = 360;
                     int barH = 8;
                     int bx = cx - (barW / 2);
