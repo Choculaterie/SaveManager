@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.lang.reflect.Field;
 
 public class CloudSaveManagerScreen extends Screen {
     private final Screen parent;
@@ -38,6 +39,7 @@ public class CloudSaveManagerScreen extends Screen {
     private ButtonWidget refreshBtn;
     private ButtonWidget prevBtn;
     private ButtonWidget nextBtn;
+    private ButtonWidget settingsBtn;
 
     // Bottom action buttons
     private ButtonWidget downloadBtn;
@@ -46,14 +48,11 @@ public class CloudSaveManagerScreen extends Screen {
     // Selection (global index in `saves`, -1 means none)
     private int selectedIndex = -1;
 
-    private volatile long dlDownloaded = 0L;
-    private volatile long dlTotal = -1L;
-    private volatile boolean dlActive = false;
-    private volatile long dlStartNanos = 0L;
-    private volatile long dlLastTickNanos = 0L;
-    private volatile long dlLastBytes = 0L;
-    private volatile double dlSpeedBps = 0.0;
-    private volatile boolean unzipActive = false;
+
+    private static final int COL_WORLD_W = 260;
+    private static final int COL_SIZE_W = 80;
+    private static final int COL_CREATED_W = 120;
+    private static final int COL_UPDATED_W = 140;
 
     private static final ActiveOp ACTIVE = new ActiveOp();
     private static final class ActiveOp {
@@ -87,8 +86,10 @@ public class CloudSaveManagerScreen extends Screen {
         // Top buttons
         this.backBtn = ButtonWidget.builder(Text.literal("←"), b -> {
             if (this.client != null) {
-                // Re-open a fresh SelectWorldScreen to force a filesystem rescan
-                this.client.setScreen(new SelectWorldScreen(this.parent));
+                Screen rootParent = sm$resolveWorldRootParent(this.parent);
+                // Re-open a fresh SelectWorldScreen to force a filesystem rescan,
+                // but with the root parent so back requires only one click.
+                this.client.setScreen(new SelectWorldScreen(rootParent));
             }
         }).dimensions(10, 10, 20, 20).build();
         this.addDrawableChild(backBtn);
@@ -98,6 +99,19 @@ public class CloudSaveManagerScreen extends Screen {
             fetchList();
         }).dimensions(35, 10, 20, 20).build();
         this.addDrawableChild(refreshBtn);
+
+        int btnSize = 20;
+        int margin = 6;
+        this.settingsBtn = ButtonWidget.builder(
+                Text.literal("⚙"),
+                b -> {
+                    if (this.client != null) {
+                        Screen rootParent = sm$resolveWorldRootParent(this.parent);
+                        this.client.setScreen(new AccountLinkingScreen(rootParent));
+                    }
+                }
+        ).dimensions(this.width - margin - btnSize, margin, btnSize, btnSize).build();
+        this.addDrawableChild(this.settingsBtn);
 
         this.prevBtn = ButtonWidget.builder(Text.literal("<"), b -> {
             if (currentPage > 0) {
@@ -152,8 +166,14 @@ public class CloudSaveManagerScreen extends Screen {
     @Override
     public void resize(MinecraftClient client, int width, int height) {
         super.resize(client, width, height);
-        // Re-init places and re-creates row hit boxes
         this.clearAndInit();
+    }
+
+    private static boolean sm$isInvalidKey(String raw, String friendly) {
+        String r = (raw == null ? "" : raw).toLowerCase(java.util.Locale.ROOT);
+        if (friendly != null && friendly.equalsIgnoreCase("Invalid Save Manager API key")) return true;
+        if (r.contains("401") && r.contains("invalid save manager api key")) return true;
+        return false;
     }
 
     private void fetchList() {
@@ -184,6 +204,7 @@ public class CloudSaveManagerScreen extends Screen {
 
             if (err != null) {
                 SaveManagerMod.LOGGER.error("CloudSaveManager: list failed", err);
+                String raw = sm$rawFromThrowable(err);
                 runOnClient(() -> {
                     loading = false;
                     status = "List failed";
@@ -193,6 +214,9 @@ public class CloudSaveManagerScreen extends Screen {
                     buildRowHitBoxes();
                     rebuildPagerState();
                     updateActionButtons();
+
+                    // Show dialog with OK / Copy error
+                    sm$showErrorDialog(raw, "List failed");
                 });
                 return;
             }
@@ -418,8 +442,15 @@ public class CloudSaveManagerScreen extends Screen {
     }
 
     private void rebuildPagerState() {
-        if (prevBtn != null) prevBtn.active = currentPage > 0 && !loading;
-        if (nextBtn != null) nextBtn.active = ((currentPage + 1) * PAGE_SIZE) < saves.size() && !loading;
+        // Allow paging while downloading/unzipping, but disable during list-loading or delete
+        boolean allowPager = !loading || sm$isOpActive();
+
+        if (prevBtn != null) {
+            prevBtn.active = (currentPage > 0) && allowPager;
+        }
+        if (nextBtn != null) {
+            nextBtn.active = (((currentPage + 1) * PAGE_SIZE) < saves.size()) && allowPager;
+        }
     }
 
     private SaveItem getSelected() {
@@ -549,10 +580,12 @@ public class CloudSaveManagerScreen extends Screen {
 
             if (err != null) {
                 SaveManagerMod.LOGGER.error("CloudSaveManager: download failed", err);
+                String raw = sm$rawFromThrowable(err);
                 runOnClient(() -> {
                     status = "Download failed";
                     loading = false;
                     updateActionButtons();
+                    sm$showErrorDialog(raw, "Download failed");
                 });
                 return;
             }
@@ -680,36 +713,42 @@ public class CloudSaveManagerScreen extends Screen {
         ctx.drawCenteredTextWithShadow(this.textRenderer, Text.literal(sm$quotaLineComputed()), cx, 22, 0xFFAAAAAA);
 
 
-        // Columns
-        int left = cx - 220;
-        int headerY = top + 10;
-        drawColText(ctx, "World", left, headerY, 0xFFFFFFFF);
-        drawColText(ctx, "Size", left + 220, headerY, 0xFFFFFFFF);
-        drawColText(ctx, "Created", left + 300, headerY, 0xFFFFFFFF);
-        drawColText(ctx, "Updated", left + 420, headerY, 0xFFFFFFFF);
-
         Geometry g = computeGeometry();
-        ctx.enableScissor(g.listX, g.listY, g.listX + g.listW, g.listY + g.listH);
+        int col1 = g.listX();
+        int col2 = col1 + COL_WORLD_W;
+        int col3 = col2 + COL_SIZE_W;
+        int col4 = col3 + COL_CREATED_W;
+
+        int headerY = (this.height / 4) + 10;
+        drawColText(ctx, "World",  col1, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Size",   col2, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Created",col3, headerY, 0xFFFFFFFF);
+        drawColText(ctx, "Updated",col4, headerY, 0xFFFFFFFF);
+
+        // Scissor to the exact content area
+        ctx.enableScissor(g.listX(), g.listY(), g.listX() + g.listW(), g.listY() + g.listH());
 
         int start = currentPage * PAGE_SIZE;
         int end = Math.min(start + PAGE_SIZE, saves.size());
         for (int i = start; i < end; i++) {
             SaveItem s = saves.get(i);
-            int ry = g.rowStartY + (i - start) * g.rowHeight;
+            int ry = g.rowStartY() + (i - start) * g.rowHeight();
 
+            // Highlight uses exact content width
             if (i == selectedIndex) {
-                int h = Math.max(1, g.rowHeight - 4);
-                int x1 = g.listX;
-                int x2 = g.listX + g.listW;
+                int h = Math.max(1, g.rowHeight() - 4);
+                int x1 = g.listX();
+                int x2 = g.listX() + g.listW();
                 ctx.fill(x1, ry - 4, x2, ry - 1 + h, 0x66FFFFFF);
             }
 
-            drawColText(ctx, safe(s.worldName), left, ry, 0xFFDDDDDD);
-            drawColText(ctx, formatBytes(s.fileSizeBytes), left + 220, ry, 0xFFDDDDDD);
-            drawColText(ctx, shortDate(s.createdAt), left + 300, ry, 0xFFDDDDDD);
-            drawColText(ctx, shortDate(s.updatedAt), left + 420, ry, 0xFFDDDDDD);
+            drawColText(ctx, safe(s.worldName), col1, ry, 0xFFDDDDDD);
+            drawColText(ctx, formatBytes(s.fileSizeBytes), col2, ry, 0xFFDDDDDD);
+            drawColText(ctx, shortDate(s.createdAt), col3, ry, 0xFFDDDDDD);
+            drawColText(ctx, shortDate(s.updatedAt), col4, ry, 0xFFDDDDDD);
 
-            ctx.fill(g.listX, ry + g.rowHeight - 5, g.listX + g.listW - 10, ry + g.rowHeight - 4, 0x22FFFFFF);
+            // Underline uses exact content width
+            ctx.fill(g.listX(), ry + g.rowHeight() - 5, g.listX() + g.listW(), ry + g.rowHeight() - 4, 0x22FFFFFF);
         }
 
         ctx.disableScissor();
@@ -853,7 +892,6 @@ public class CloudSaveManagerScreen extends Screen {
 
     private Geometry computeGeometry() {
         int cx = this.width / 2;
-        int left = cx - 220;
         int top = this.height / 4;
         int headerY = top + 10;
 
@@ -864,9 +902,10 @@ public class CloudSaveManagerScreen extends Screen {
         int end = Math.min(start + PAGE_SIZE, saves.size());
         int visible = Math.max(0, end - start);
 
-        int listX = left - 6;
+        int contentW = COL_WORLD_W + COL_SIZE_W + COL_CREATED_W + COL_UPDATED_W;
+        int listX = Math.max(0, cx - (contentW / 2));
         int listY = rowStartY - 10;
-        int listW = 720;
+        int listW = contentW;
         int listH = Math.max(visible * rowHeight, rowHeight) + 12;
         return new Geometry(listX, listY, listW, listH, rowStartY, rowHeight);
     }
@@ -937,5 +976,109 @@ public class CloudSaveManagerScreen extends Screen {
         return new String(pt, java.nio.charset.StandardCharsets.UTF_8);
     }
 
+    private static Screen sm$resolveWorldRootParent(Screen parent) {
+        Screen p = parent;
+        int guard = 0;
+        while (p instanceof SelectWorldScreen && guard++ < 8) {
+            try {
+                Field f = SelectWorldScreen.class.getDeclaredField("parent");
+                f.setAccessible(true);
+                Screen next = (Screen) f.get(p);
+                if (next == null || next == p) break;
+                p = next;
+            } catch (Throwable ignored) {
+                break;
+            }
+        }
+        return p;
+    }
+
+    private static String sm$rawFromThrowable(Throwable t) {
+        if (t == null) return "";
+        StringBuilder sb = new StringBuilder();
+        int guard = 0;
+        while (t != null && guard++ < 16) {
+            String m = t.getMessage();
+            if (m != null && !m.isBlank()) {
+                if (sb.length() > 0) sb.append(" | ");
+                sb.append(m);
+            }
+            t = t.getCause();
+        }
+        return sb.toString();
+    }
+
+    private static String sm$extractFriendly(String raw) {
+        if (raw == null) raw = "";
+        String friendly = "";
+
+        // Try to find a JSON object with an "error" field
+        int start = raw.indexOf('{');
+        while (start >= 0 && start < raw.length()) {
+            try {
+                String sub = raw.substring(start).trim();
+                com.google.gson.JsonElement el = new com.google.gson.JsonParser().parse(sub);
+                if (el.isJsonObject()) {
+                    com.google.gson.JsonObject obj = el.getAsJsonObject();
+                    if (obj.has("error") && obj.get("error").isJsonPrimitive()) {
+                        friendly = obj.get("error").getAsString();
+                        if (friendly != null && !friendly.isBlank()) return friendly;
+                    }
+                }
+            } catch (Throwable ignored) {}
+            start = raw.indexOf('{', start + 1);
+        }
+
+        // Known 401 invalid key
+        if (raw.contains("401") && raw.toLowerCase(java.util.Locale.ROOT).contains("invalid save manager api key")) {
+            return "Invalid Save Manager API key";
+        }
+
+        // Known quota text present in raw -> use the message as-is
+        if (raw.toLowerCase(java.util.Locale.ROOT).contains("exceed storage quota")) {
+            // Try to extract the JSON "error" if present in this phrase
+            int i = raw.indexOf('{');
+            if (i >= 0) {
+                try {
+                    var obj = new com.google.gson.JsonParser().parse(raw.substring(i)).getAsJsonObject();
+                    if (obj.has("error")) {
+                        String s = obj.get("error").getAsString();
+                        if (s != null && !s.isBlank()) return s;
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        return friendly; // empty -> unknown
+    }
+
+    private void sm$showErrorDialog(String raw, String fallbackTitle) {
+        String friendly = sm$extractFriendly(raw);
+        Text title = Text.literal("Error");
+        Text message = Text.literal((friendly == null || friendly.isBlank()) ? fallbackTitle : friendly);
+        boolean invalidKey = sm$isInvalidKey(raw, friendly);
+
+        this.client.setScreen(new ConfirmScreen(confirmed -> {
+            if (!confirmed) {
+                try {
+                    if (this.client != null && this.client.keyboard != null) {
+                        this.client.keyboard.setClipboard(raw == null ? "" : raw);
+                    }
+                } catch (Throwable ignored) {}
+                return;
+            }
+            if (invalidKey) {
+                if (this.client != null) {
+                    Screen rootParent = sm$resolveWorldRootParent(this.parent);
+                    this.client.setScreen(new AccountLinkingScreen(rootParent));
+                }
+                return;
+            }
+            if (this.client != null) {
+                Screen rootParent = sm$resolveWorldRootParent(this.parent);
+                this.client.setScreen(new SelectWorldScreen(rootParent));
+            }
+        }, title, message, Text.literal("OK"), Text.literal("Copy error")));
+    }
 }
 

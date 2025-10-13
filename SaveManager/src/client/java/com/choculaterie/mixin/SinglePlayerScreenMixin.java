@@ -40,14 +40,12 @@ import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Map;
-import java.util.HashMap;
 
 @Mixin(SelectWorldScreen.class)
 public abstract class SinglePlayerScreenMixin extends Screen {
-    protected SinglePlayerScreenMixin(Text title) { super(title); }
+    protected SinglePlayerScreenMixin(Text title, Screen parent) { super(title);
+        this.parent = parent;
+    }
 
     // Vanilla search field; we anchor our buttons next to it (same as your icon).
     @Shadow protected TextFieldWidget searchBox;
@@ -89,6 +87,12 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     @Unique private java.util.Map<ButtonWidget, Boolean> sm$bottomPrevVisible = new java.util.HashMap<>();
     @Unique private java.util.Map<ButtonWidget, Boolean> sm$bottomPrevActive = new java.util.HashMap<>();
     @Unique private boolean sm$bottomHidden = false;
+
+    @Unique
+    private static volatile String sm$apiKey = null;
+
+    @Unique
+    private Screen parent;
 
     @Unique
     private void sm$collectBottomButtons() {
@@ -198,17 +202,12 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     }
 
 
-    // Only inject into init; avoid render/tick mixin signature issues
     @Inject(method = "init", at = @At("RETURN"))
     private void savemanager$init(CallbackInfo ci) {
-        // Small link button next to the search field (👁/💾 style anchor)
-        this.saveManagerLinkBtn = ButtonWidget.builder(
-                Text.literal("⚙"),
-                b -> this.client.setScreen(new AccountLinkingScreen((Screen)(Object)this))
-        ).dimensions(0, 0, ICON_SIZE, ICON_SIZE).build();
-        this.addDrawableChild(this.saveManagerLinkBtn);
+        this.parent = (Screen)(Object)this;
 
-        // Upload button placed just to the right of the icon; enabled only with a selected world
+        // Settings icon removed from SelectWorldScreen; it now lives in CloudSaveManagerScreen.
+
         this.uploadSaveBtn = ButtonWidget.builder(
                 Text.literal("\uD83D\uDCBE"),
                 b -> savemanager$confirmThenUploadSelected()
@@ -217,24 +216,33 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         this.addDrawableChild(this.uploadSaveBtn);
 
         this.cloudSavesBtn = ButtonWidget.builder(
-                        Text.literal("\uD83D\uDCC1"),
-                        b -> this.client.setScreen(new com.choculaterie.gui.CloudSaveManagerScreen((Screen)(Object)this)))
-                .dimensions(0, 0, 20, ICON_SIZE).build();
+                Text.literal("\uD83D\uDCC1"),
+                b -> {
+                    String apiKey = sm$loadApiKey(this.client);
+                    if (apiKey == null || apiKey.isBlank()) {
+                        Screen rootParent = sm$resolveWorldRootParent((Screen)(Object)this);
+                        this.client.setScreen(new com.choculaterie.gui.AccountLinkingScreen(rootParent));
+                    } else {
+                        sm$apiKey = apiKey;
+                        try { this.savemanager$net.setApiKey(apiKey); } catch (Throwable ignored) {}
+                        this.client.setScreen(new com.choculaterie.gui.CloudSaveManagerScreen((Screen)(Object)this));
+                    }
+                }
+        ).dimensions(0, 0, 20, ICON_SIZE).build();
         this.addDrawableChild(this.cloudSavesBtn);
 
-        // Per-frame lightweight updater: reposition buttons and toggle enabled state
         this.addDrawable((Drawable) this::savemanager$frameUpdate);
+        try { savemanager$repositionButtons(); } catch (Throwable ignored) {}
 
-        // If an upload is already active (from another screen instance), reflect that immediately
         try {
             sm$collectBottomButtons();
             if (sm$isUploading()) {
-                // Keep upload disabled and remove bottom buttons now
                 if (this.uploadSaveBtn != null) this.uploadSaveBtn.active = false;
                 sm$hideBottomButtons();
             }
         } catch (Throwable ignored) {}
     }
+
 
     @Unique
     private void savemanager$frameUpdate(DrawContext ctx, int mouseX, int mouseY, float delta) {
@@ -395,7 +403,9 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
     @Unique
     private void sm$beginZipOnNextFrame(String worldName, Path worldDir) {
-        // Mark zipping/uploading state BEFORE zipping so UI shows spinner
+        // Ensure the uploading instance has the API key
+        try { if (sm$apiKey != null) this.savemanager$net.setApiKey(sm$apiKey); } catch (Throwable ignored) {}
+
         upActive = true;
         upZipping = true;
         upUploaded = 0L;
@@ -413,13 +423,19 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
     }
 
-    // Add this method
     @Unique
     private void sm$uploadZipDirect(final Path zipFinal, final String origWorldName, final NetworkManager savemanager$net) {
         try {
-            // Transition from zipping to uploading
+            // Enter uploading state
             upZipping = false;
             upActive = true;
+            upUploaded = 0L;
+            upTotal = -1L;
+            upStartNanos = System.nanoTime();
+            upLastTickNanos = upStartNanos;
+            upLastBytes = 0L;
+            upSpeedBps = 0.0;
+
             try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
 
             savemanager$net.uploadWorldSave(origWorldName, zipFinal, (sent, total) -> {
@@ -436,10 +452,14 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                     upLastTickNanos = now;
                     upLastBytes = upUploaded;
                 }
+
                 try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
             }).whenComplete((json, uploadErr) -> {
                 try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
+
+                if (this.client == null) return;
                 this.client.execute(() -> {
+                    // Reset state
                     upActive = false;
                     upZipping = false;
                     upUploaded = 0L;
@@ -451,39 +471,34 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
                     if (uploadErr != null) {
                         SaveManagerMod.LOGGER.error("(savemanager) Upload failed for \"{}\"", origWorldName, uploadErr);
-                        this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
-                                Text.literal("Upload Failed"),
-                                Text.literal("Upload failed: " + safeErrMessage(uploadErr))));
-                    } else {
-                        SaveManagerMod.LOGGER.info("(savemanager) Upload succeeded for \"{}\"", origWorldName);
-                        this.client.setScreen((SelectWorldScreen)(Object)this);
+                        String raw = sm$rawFromThrowable(uploadErr);
+                        sm$showErrorDialog(raw, "Upload failed");
+                        return;
                     }
+
+                    // Success: open a fresh SelectWorldScreen so list and icons fully reload
+                    sm$openFreshSelectWorld();
                 });
             });
         } catch (Throwable t) {
             try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
-            SaveManagerMod.LOGGER.error("(savemanager) Exception starting upload for \"{}\"", origWorldName, t);
-            this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
-                    Text.literal("Upload Failed"),
-                    Text.literal("Upload error: " + safeErrMessage(t)))));
-            upActive = false;
-            upZipping = false;
+            SaveManagerMod.LOGGER.error("(savemanager) Upload error for \"{}\"", origWorldName, t);
+            if (this.client != null) {
+                String raw = sm$rawFromThrowable(t);
+                this.client.execute(() -> sm$showErrorDialog(raw, "Upload failed"));
+            }
         }
     }
 
     @Unique
     private void savemanager$repositionButtons() {
-        // Default fallback
         int x = 6, y = 6, h = ICON_SIZE, w = 0;
-
         try {
             if (this.searchBox != null) {
-                // Try getters first (present on most mappings)
                 try { x = (int) this.searchBox.getClass().getMethod("getX").invoke(this.searchBox); } catch (Throwable ignored) {}
                 try { y = (int) this.searchBox.getClass().getMethod("getY").invoke(this.searchBox); } catch (Throwable ignored) {}
                 try { w = (int) this.searchBox.getClass().getMethod("getWidth").invoke(this.searchBox); } catch (Throwable ignored) {}
                 try { h = (int) this.searchBox.getClass().getMethod("getHeight").invoke(this.searchBox); } catch (Throwable ignored) {}
-                // Fallback to fields
                 try { Field f = this.searchBox.getClass().getDeclaredField("x"); f.setAccessible(true); x = f.getInt(this.searchBox); } catch (Throwable ignored) {}
                 try { Field f = this.searchBox.getClass().getDeclaredField("y"); f.setAccessible(true); y = f.getInt(this.searchBox); } catch (Throwable ignored) {}
                 if (w == 0) { try { Field f = this.searchBox.getClass().getDeclaredField("width"); f.setAccessible(true); w = f.getInt(this.searchBox); } catch (Throwable ignored) {} }
@@ -491,30 +506,29 @@ public abstract class SinglePlayerScreenMixin extends Screen {
             }
         } catch (Throwable ignored) {}
 
-        // Place the small icon right-aligned to the search box with a small gap
-        int iconX = x + w + GAP;
         int iconY = y + Math.max(0, (h - ICON_SIZE) / 2);
 
-        if (this.saveManagerLinkBtn != null) {
-            try { this.saveManagerLinkBtn.setPosition(iconX, iconY); } catch (Throwable ignored) {}
-            this.saveManagerLinkBtn.visible = true;
-            this.saveManagerLinkBtn.active = true;
-        }
-
-        // Place the "Upload Save" button to the right of the icon
+        // Upload button directly to the right of the search field
         if (this.uploadSaveBtn != null) {
-            int uploadX = iconX + ICON_SIZE + GAP;
-            int uploadY = iconY;
-            try { this.uploadSaveBtn.setPosition(uploadX, uploadY); } catch (Throwable ignored) {}
+            int uploadX = x + w + GAP;
+            try { this.uploadSaveBtn.setPosition(uploadX, iconY); } catch (Throwable ignored) {}
             this.uploadSaveBtn.visible = true;
         }
 
+        // Cloud manager button follows the upload button
         if (this.cloudSavesBtn != null) {
-            int cloudX = iconX + ICON_SIZE + GAP + 20 + GAP; // after Upload button
-            int cloudY = iconY;
-            try { this.cloudSavesBtn.setPosition(cloudX, cloudY); } catch (Throwable ignored) {}
+            int cloudX = x + w + GAP + 20 + GAP;
+            try { this.cloudSavesBtn.setPosition(cloudX, iconY); } catch (Throwable ignored) {}
             this.cloudSavesBtn.visible = true;
         }
+    }
+
+    @Unique
+    private static boolean sm$isInvalidKey(String raw, String friendly) {
+        String r = (raw == null ? "" : raw).toLowerCase(java.util.Locale.ROOT);
+        if (friendly != null && friendly.equalsIgnoreCase("Invalid Save Manager API key")) return true;
+        if (r.contains("401") && r.contains("invalid save manager api key")) return true;
+        return false;
     }
 
     @Unique
@@ -677,122 +691,6 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     }
 
     @Unique
-    private void savemanager$uploadWithNameCheck(final Path zipFinal, final String origWorldName, final NetworkManager savemanager$net) {
-        SaveManagerMod.LOGGER.info("(savemanager) Querying cloud save names for upload: {}", origWorldName);
-
-        // Reusable upload action as a lambda so we can call it from multiple branches
-        Runnable doUpload = () -> {
-            try {
-                // Transition out of zipping phase into uploading phase
-                upZipping = false;
-                upActive = true;
-                try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
-
-                // Use the new overload with progress callback so we can update UI
-                savemanager$net.uploadWorldSave(origWorldName, zipFinal, (sent, total) -> {
-                    // Update upload state
-                    upUploaded = Math.max(0L, sent);
-                    if (total > 0) upTotal = total;
-
-                    long now = System.nanoTime();
-                    long dtNs = now - upLastTickNanos;
-                    long dBytes = upUploaded - upLastBytes;
-                    if (dtNs > 50_000_000L) {
-                        double instBps = dBytes > 0 ? (dBytes * 1_000_000_000.0) / dtNs : 0.0;
-                        double alpha = 0.2;
-                        upSpeedBps = upSpeedBps <= 0 ? instBps : (alpha * instBps + (1 - alpha) * upSpeedBps);
-                        upLastTickNanos = now;
-                        upLastBytes = upUploaded;
-                    }
-
-                    // ensure UI updates on client thread
-                    try { this.client.execute(() -> {}); } catch (Throwable ignored) {}
-                }).whenComplete((json, uploadErr) -> {
-                    try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
-
-                    // Clear upload state on client thread
-                    this.client.execute(() -> {
-                        upActive = false;
-                        upZipping = false;
-                        upUploaded = 0L;
-                        upTotal = -1L;
-                        upStartNanos = 0L;
-                        upLastBytes = 0L;
-                        upLastTickNanos = 0L;
-                        upSpeedBps = 0.0;
-
-                        if (uploadErr != null) {
-                            SaveManagerMod.LOGGER.error("(savemanager) Upload failed for \"{}\"", origWorldName, uploadErr);
-                            this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
-                                    Text.literal("Upload Failed"),
-                                    Text.literal("Upload failed: " + safeErrMessage(uploadErr))));
-                        } else {
-                            SaveManagerMod.LOGGER.info("(savemanager) Upload succeeded for \"{}\"", origWorldName);
-                            // No success prompt per request — return to world list
-                            this.client.setScreen((SelectWorldScreen)(Object)this);
-                        }
-                    });
-                });
-            } catch (Throwable t) {
-                try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
-                SaveManagerMod.LOGGER.error("(savemanager) Exception starting upload for \"{}\"", origWorldName, t);
-                this.client.execute(() -> this.client.setScreen(new ConfirmScreen(b -> this.client.setScreen((SelectWorldScreen)(Object)this),
-                        Text.literal("Upload Failed"),
-                        Text.literal("Upload failed: " + safeErrMessage(t)))));
-                // Ensure state cleared
-                upActive = false;
-                upZipping = false;
-            }
-        };
-
-        // Query existing names
-        savemanager$net.listWorldSaveNames().whenComplete((names, namesErr) -> {
-            if (namesErr != null) {
-                SaveManagerMod.LOGGER.warn("(savemanager) Failed to fetch name list; proceeding to upload for \"{}\": {}", origWorldName, safeErrMessage(namesErr));
-                doUpload.run();
-                return;
-            }
-
-            boolean exists = false;
-            String sanitized = sanitizeFolderName(origWorldName);
-            if (names != null) {
-                for (String n : names) {
-                    if (n == null) continue;
-                    if (n.equalsIgnoreCase(origWorldName) || (!sanitized.isEmpty() && n.equalsIgnoreCase(sanitized))) {
-                        exists = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!exists) {
-                SaveManagerMod.LOGGER.info("(savemanager) Name not present in cloud; uploading \"{}\" immediately", origWorldName);
-                doUpload.run();
-                return;
-            }
-
-            // Name exists -> prompt user to confirm overwrite
-            this.client.execute(() -> {
-                Text title = Text.literal("Overwrite Cloud Save?");
-                Text message = Text.literal("A save named \"" + origWorldName + "\" already exists in the cloud. Overwrite?");
-                this.client.setScreen(new ConfirmScreen(confirmed -> {
-                    if (!confirmed) {
-                        // Cancelled: return to world list and clean up temp zip
-                        try { Files.deleteIfExists(zipFinal); } catch (Throwable ignored) {}
-                        // Clear upload state (user cancelled)
-                        upActive = false;
-                        upZipping = false;
-                        this.client.setScreen((SelectWorldScreen)(Object)this);
-                        return;
-                    }
-                    // Confirmed -> upload
-                    doUpload.run();
-                }, title, message));
-            });
-        });
-    }
-
-    @Unique
     private static String sanitizeFolderName(String s) {
         if (s == null) return "";
         String clean = s.trim().replaceAll("[\\\\/:*?\"<>|]+", "_");
@@ -914,9 +812,16 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
             String apiKey = sm$loadApiKey(this.client);
             if (apiKey == null || apiKey.isBlank()) {
-                SaveManagerMod.LOGGER.warn("(savemanager) Upload canceled: no API key configured");
+                if (this.client != null) {
+                    this.client.execute(() -> {
+                        Screen rootParent = sm$resolveWorldRootParent((Screen)(Object)this);
+                        this.client.setScreen(new AccountLinkingScreen(rootParent));
+                    });
+                }
                 return;
             }
+            // Cache globally and set on this instance
+            sm$apiKey = apiKey;
             savemanager$net.setApiKey(apiKey);
 
             final String worldName = sel.getDisplayName();
@@ -925,14 +830,27 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                 SaveManagerMod.LOGGER.warn("(savemanager) Upload canceled: world directory not found: {}", sel);
                 return;
             }
+            final String dirKey = worldDir.getFileName() != null ? worldDir.getFileName().toString() : null;
 
-            // Validate duplicate name BEFORE zipping
             savemanager$net.listWorldSaveNames().whenComplete((names, namesErr) -> {
-                Runnable begin = () -> this.client.execute(() -> sm$beginZipOnNextFrame(worldName, worldDir));
+                // Start on whichever SelectWorldScreen is current, but re-apply API key to that instance
+                Runnable beginOnCurrentScreen = () -> {
+                    try {
+                        Screen cur = this.client.currentScreen;
+                        if (cur instanceof SelectWorldScreen) {
+                            SinglePlayerScreenMixin mixin = (SinglePlayerScreenMixin) (Object) cur;
+                            if (sm$apiKey != null) mixin.savemanager$net.setApiKey(sm$apiKey);
+                            mixin.sm$beginZipOnNextFrame(worldName, worldDir);
+                        } else {
+                            if (sm$apiKey != null) this.savemanager$net.setApiKey(sm$apiKey);
+                            sm$beginZipOnNextFrame(worldName, worldDir);
+                        }
+                    } catch (Throwable ignored) {}
+                };
 
                 if (namesErr != null) {
                     SaveManagerMod.LOGGER.warn("(savemanager) Failed to fetch name list; proceeding: {}", safeErrMessage(namesErr));
-                    begin.run();
+                    this.client.execute(beginOnCurrentScreen);
                     return;
                 }
 
@@ -949,24 +867,68 @@ public abstract class SinglePlayerScreenMixin extends Screen {
                 }
 
                 if (!exists) {
-                    // No conflict -> start when this screen is active (spinner first)
-                    begin.run();
+                    this.client.execute(beginOnCurrentScreen);
                     return;
                 }
 
-                // Conflict -> prompt. Only start after user returns to this screen.
                 this.client.execute(() -> {
                     Text title = Text.literal("Overwrite Cloud Save?");
                     Text message = Text.literal("A save named \"" + worldName + "\" already exists in the cloud. Overwrite?");
                     this.client.setScreen(new ConfirmScreen(confirmed -> {
-                        if (!confirmed) {
-                            // User canceled; nothing to do
-                            this.client.setScreen((SelectWorldScreen)(Object)this);
-                            return;
-                        }
-                        // Return to this screen, then schedule start (spinner first)
-                        this.client.setScreen((SelectWorldScreen)(Object)this);
-                        begin.run();
+                        sm$openFreshSelectWorld();
+
+                        this.client.execute(() -> {
+                            try {
+                                Screen cur = this.client.currentScreen;
+                                if (cur instanceof SelectWorldScreen) {
+                                    SinglePlayerScreenMixin mixin = (SinglePlayerScreenMixin) (Object) cur;
+
+                                    // Restore selection by folder name
+                                    if (dirKey != null) {
+                                        WorldListWidget list = mixin.sm$getWorldList();
+                                        if (list != null) {
+                                            java.util.List<?> entries = null;
+                                            try { entries = (java.util.List<?>) list.getClass().getMethod("children").invoke(list); } catch (Throwable ignored) {}
+                                            if (entries == null) {
+                                                try {
+                                                    Field f = list.getClass().getDeclaredField("children");
+                                                    f.setAccessible(true);
+                                                    Object v = f.get(list);
+                                                    if (v instanceof java.util.List<?> l) entries = l;
+                                                } catch (Throwable ignored) {}
+                                            }
+                                            if (entries != null) {
+                                                Object match = null;
+                                                for (Object e : entries) {
+                                                    String dn = mixin.sm$getWorldDirNameFromEntry(e);
+                                                    if (dirKey.equals(dn)) { match = e; break; }
+                                                }
+                                                if (match != null) {
+                                                    try {
+                                                        for (java.lang.reflect.Method m : list.getClass().getMethods()) {
+                                                            if (m.getName().equals("setSelected") && m.getParameterCount() == 1) {
+                                                                m.setAccessible(true);
+                                                                m.invoke(list, match);
+                                                                break;
+                                                            }
+                                                        }
+                                                    } catch (Throwable ignored) {}
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (confirmed) {
+                                        // Re-apply API key on the fresh instance before starting
+                                        if (sm$apiKey != null) mixin.savemanager$net.setApiKey(sm$apiKey);
+                                        mixin.sm$beginZipOnNextFrame(worldName, worldDir);
+                                    }
+                                } else if (confirmed) {
+                                    if (sm$apiKey != null) this.savemanager$net.setApiKey(sm$apiKey);
+                                    sm$beginZipOnNextFrame(worldName, worldDir);
+                                }
+                            } catch (Throwable ignored) {}
+                        });
                     }, title, message));
                 });
             });
@@ -988,30 +950,6 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     }
 
     @Unique
-    private static String savemanager$getString(JsonObject obj, String... names) {
-        for (String n : names) {
-            if (!obj.has(n)) continue;
-            var e = obj.get(n);
-            if (e == null || e.isJsonNull()) continue;
-            if (e.isJsonPrimitive()) {
-                var p = e.getAsJsonPrimitive();
-                if (p.isString()) return p.getAsString();
-                if (p.isNumber()) return String.valueOf(p.getAsLong());
-                if (p.isBoolean()) return String.valueOf(p.getAsBoolean());
-            } else if (e.isJsonObject()) {
-                JsonObject o = e.getAsJsonObject();
-                String s = savemanager$getString(o, "text");
-                if (!s.isEmpty()) return s;
-                s = savemanager$getString(o, "value");
-                if (!s.isEmpty()) return s;
-                s = savemanager$getString(o, "iso");
-                if (!s.isEmpty()) return s;
-            }
-        }
-        return "";
-    }
-
-    @Unique
     private static String formatDurationShort(long seconds) {
         if (seconds <= 0) return "0s";
         long h = seconds / 3600;
@@ -1029,5 +967,112 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         int exp = (int) (Math.log(b) / Math.log(unit));
         String pre = "KMGTPE".charAt(Math.min(exp - 1, 5)) + "";
         return String.format("%.1f %sB", b / Math.pow(unit, exp), pre);
+    }
+
+    @Unique
+    private static Screen sm$resolveWorldRootParent(Screen start) {
+        Screen p = start;
+        int guard = 0;
+        while (p instanceof SelectWorldScreen && guard++ < 8) {
+            try {
+                Field f = SelectWorldScreen.class.getDeclaredField("parent");
+                f.setAccessible(true);
+                Screen next = (Screen) f.get(p);
+                if (next == null || next == p) break;
+                p = next;
+            } catch (Throwable ignored) {
+                break;
+            }
+        }
+        return p;
+    }
+
+    @Unique
+    private void sm$openFreshSelectWorld() {
+        if (this.client == null) return;
+        Screen rootParent = sm$resolveWorldRootParent((Screen)(Object)this);
+        this.client.setScreen(new SelectWorldScreen(rootParent));
+    }
+
+    @Unique
+    private static String sm$rawFromThrowable(Throwable t) {
+        if (t == null) return "";
+        StringBuilder sb = new StringBuilder();
+        int guard = 0;
+        while (t != null && guard++ < 16) {
+            String m = t.getMessage();
+            if (m != null && !m.isBlank()) {
+                if (sb.length() > 0) sb.append(" | ");
+                sb.append(m);
+            }
+            t = t.getCause();
+        }
+        return sb.toString();
+    }
+
+    @Unique
+    private static String sm$extractFriendly(String raw) {
+        if (raw == null) raw = "";
+        String friendly = "";
+
+        // Try to extract {"error":"..."} text from any JSON found in the raw chain
+        int start = raw.indexOf('{');
+        while (start >= 0 && start < raw.length()) {
+            try {
+                String sub = raw.substring(start).trim();
+                com.google.gson.JsonElement el = new com.google.gson.JsonParser().parse(sub);
+                if (el.isJsonObject()) {
+                    com.google.gson.JsonObject obj = el.getAsJsonObject();
+                    if (obj.has("error") && obj.get("error").isJsonPrimitive()) {
+                        friendly = obj.get("error").getAsString();
+                        if (friendly != null && !friendly.isBlank()) return friendly;
+                    }
+                }
+            } catch (Throwable ignored) {}
+            start = raw.indexOf('{', start + 1);
+        }
+
+        // Known cases
+        if (raw.contains("401") && raw.toLowerCase(java.util.Locale.ROOT).contains("invalid save manager api key")) {
+            return "Invalid Save Manager API key";
+        }
+        if (raw.toLowerCase(java.util.Locale.ROOT).contains("exceed storage quota")) {
+            int i = raw.indexOf('{');
+            if (i >= 0) {
+                try {
+                    var obj = new com.google.gson.JsonParser().parse(raw.substring(i)).getAsJsonObject();
+                    if (obj.has("error")) {
+                        String s = obj.get("error").getAsString();
+                        if (s != null && !s.isBlank()) return s;
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+
+        return friendly;
+    }
+
+    @Unique
+    private void sm$showErrorDialog(String raw, String fallbackTitle) {
+        String friendly = sm$extractFriendly(raw);
+        Text title = Text.literal("Error");
+        Text message = Text.literal((friendly == null || friendly.isBlank()) ? fallbackTitle : friendly);
+
+        this.client.setScreen(new ConfirmScreen(confirmed -> {
+            if (!confirmed) {
+                try {
+                    if (this.client != null && this.client.keyboard != null) {
+                        this.client.keyboard.setClipboard(raw == null ? "" : raw);
+                    }
+                } catch (Throwable ignored) {}
+                return;
+            }
+            if (sm$isInvalidKey(raw, friendly)) {
+                Screen rootParent = sm$resolveWorldRootParent((Screen)(Object)this);
+                this.client.setScreen(new com.choculaterie.gui.AccountLinkingScreen(rootParent));
+                return;
+            }
+            sm$openFreshSelectWorld();
+        }, title, message, Text.literal("OK"), Text.literal("Copy error")));
     }
 }

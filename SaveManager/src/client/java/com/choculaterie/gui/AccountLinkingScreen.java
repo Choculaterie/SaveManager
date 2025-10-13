@@ -25,6 +25,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.lang.reflect.Field;
 
 public class AccountLinkingScreen extends Screen {
     private final Screen parent;
@@ -67,72 +68,93 @@ public class AccountLinkingScreen extends Screen {
 
     @Override
     protected void init() {
-        int centerX = this.width / 2;
+        int cx = this.width / 2;
+
+        int fieldW = 200;
+        int eyeW = 25;
+        int resetW = 50;
+        int gap = 6;
+
+        int groupW = fieldW + gap + eyeW + gap + resetW;
+        int groupLeft = cx - (groupW / 2);
+
         int fieldY = this.height / 2 - 10;
+        int actionY = fieldY + 30;
 
-        this.tokenField = new TextFieldWidget(
-                this.textRenderer,
-                centerX - 100, fieldY,
-                200, 20,
-                Text.literal("API Key")
-        );
+        // Text field (existing)
+        this.tokenField = new TextFieldWidget(this.textRenderer, groupLeft, fieldY, fieldW, 20, Text.literal("API Key"));
         this.tokenField.setMaxLength(Integer.MAX_VALUE);
-
-        // Update backing value; when effectively visible (incl. empty), we can trust widget text
         this.tokenField.setChangedListener(s -> {
+            // Keep backing value in sync when visible or provider installed
             if (isEffectivelyVisible() || maskingProviderInstalled) {
                 realToken = (s != null) ? s : "";
-                boolean isEmptyNow = realToken.isEmpty();
-                if (isEmptyNow != lastEmptyState) {
-                    lastEmptyState = isEmptyNow;
-                    applyMasking(); // re-evaluate when empty/non-empty flips
-                }
+            }
+            // React only when empty/non-empty flips
+            boolean isEmptyNow = isTokenEmpty();
+            if (isEmptyNow != lastEmptyState) {
+                lastEmptyState = isEmptyNow;
+                applyMasking();
+                updateResetButton();
             }
         });
-
         this.addSelectableChild(this.tokenField);
         this.setInitialFocus(this.tokenField);
 
-        // Link button
-        this.addDrawableChild(ButtonWidget.builder(
-                Text.literal("Link Account"),
-                b -> openApiKeyWebsite()
-        ).dimensions(centerX - 100, fieldY - 25, 200, 20).build());
-
-        // Eye button
-        this.visibilityButton = ButtonWidget.builder(
-                Text.literal(""),
-                b -> {
-                    passwordVisible = !passwordVisible;
-                    applyMasking();
-                }
-        ).dimensions(centerX + 105, fieldY, 25, 20).build();
+        // Eye button (existing)
+        this.visibilityButton = ButtonWidget.builder(Text.literal(""), b -> {
+            passwordVisible = !passwordVisible;
+            applyMasking();
+            updateResetButton();
+        }).dimensions(groupLeft + fieldW + gap, fieldY, eyeW, 20).build();
         this.addDrawableChild(this.visibilityButton);
 
-        // Reset button
+        // Reset/Link button (dynamic label and behavior)
         this.resetButton = ButtonWidget.builder(
                 Text.literal("Reset"),
-                b -> resetApiKeyAndOpenLink()
-        ).dimensions(centerX + 135, fieldY, 50, 20).build();
+                b -> {
+                    if (isTokenEmpty()) {
+                        openApiKeyWebsite(); // No token: just link
+                    } else {
+                        resetApiKeyAndOpenLink(); // Has token: reset then link
+                    }
+                }
+        ).dimensions(groupLeft + fieldW + gap + eyeW + gap, fieldY, resetW, 20).build();
         this.addDrawableChild(this.resetButton);
 
-        // Save/Cancel
+        // Save/Cancel (existing)
+        int actionW = 95;
+        int actionGap = 10;
+        int actionsGroupW = actionW + actionGap + actionW;
+        int actionsLeft = cx - (actionsGroupW / 2);
+
         this.addDrawableChild(ButtonWidget.builder(
                 Text.literal("Save"),
                 b -> saveApiKey(getApiKeyForSave())
-        ).dimensions(centerX - 100, fieldY + 30, 95, 20).build());
+        ).dimensions(actionsLeft, actionY, actionW, 20).build());
 
         this.addDrawableChild(ButtonWidget.builder(
                 Text.literal("Cancel"),
-                b -> this.client.setScreen(this.parent)
-        ).dimensions(centerX + 5, fieldY + 30, 95, 20).build());
+                b -> {
+                    if (this.client != null) {
+                        Screen rootParent = sm$resolveWorldRootParent(this.parent);
+                        this.client.setScreen(new SelectWorldScreen(rootParent));
+                    }
+                }
+        ).dimensions(actionsLeft + actionW + actionGap, actionY, actionW, 20).build());
 
-        // Load saved token; force visible when empty on first paint
+        // Load saved token \+ initialize masking and button label
         loadSavedApiKey();
         boolean empty = isTokenEmpty();
         lastEmptyState = empty;
-        passwordVisible = empty; // always visible if empty on load
+        passwordVisible = empty;
         applyMasking();
+        updateResetButton();
+    }
+
+    @Override
+    public void resize(net.minecraft.client.MinecraftClient client, int width, int height) {
+        super.resize(client, width, height);
+        this.clearAndInit();
     }
 
     private void applyMasking() {
@@ -160,7 +182,19 @@ public class AccountLinkingScreen extends Screen {
     }
 
     private boolean isTokenEmpty() {
+        // If the provider is installed or text is visible, use the field text; else use the backing value.
+        if (maskingProviderInstalled || passwordVisible) {
+            String t = (this.tokenField == null) ? "" : this.tokenField.getText();
+            return t == null || t.isEmpty();
+        }
         return realToken == null || realToken.isEmpty();
+    }
+
+    private void updateResetButton() {
+        if (this.resetButton != null) {
+            boolean empty = isTokenEmpty();
+            this.resetButton.setMessage(Text.literal(empty ? "Link" : "Reset"));
+        }
     }
 
     private boolean isEffectivelyVisible() {
@@ -299,12 +333,49 @@ public class AccountLinkingScreen extends Screen {
     }
 
     private void saveApiKey(String apiKey) {
-        if (apiKey == null || apiKey.isEmpty()) {
-            this.statusMessage = "Please enter your API key";
-            return;
-        }
-
         try {
+            if (apiKey == null || apiKey.isEmpty()) {
+                // Treat empty as "clear key" and persist the removal
+                networkManager.setApiKey(null);
+
+                File configDir = new File(client.runDirectory, "config");
+                File configFile = new File(configDir, CONFIG_FILE);
+
+                if (configFile.exists()) {
+                    boolean keptFile = false;
+                    JsonObject json = null;
+                    try (FileReader reader = new FileReader(configFile)) {
+                        json = new Gson().fromJson(reader, JsonObject.class);
+                    } catch (Exception readEx) {
+                        SaveManagerMod.LOGGER.warn("Failed reading config; deleting file", readEx);
+                    }
+                    if (json != null) {
+                        json.remove("encryptedApiToken");
+                        json.remove("apiToken");
+                        if (!json.entrySet().isEmpty()) {
+                            try (FileWriter writer = new FileWriter(configFile)) {
+                                new GsonBuilder().setPrettyPrinting().create().toJson(json, writer);
+                                keptFile = true;
+                            }
+                        }
+                    }
+                    if (!keptFile) {
+                        //noinspection ResultOfMethodCallIgnored
+                        configFile.delete();
+                    }
+                }
+
+                this.statusMessage = "API key cleared";
+                SaveManagerMod.LOGGER.info("API key cleared");
+
+                if (this.client != null) {
+                    Screen rootParent = sm$resolveWorldRootParent(this.parent);
+                    this.client.setScreen(new SelectWorldScreen(rootParent));
+                }
+                return;
+            }
+
+            // Normal save path (encrypted)
             networkManager.setApiKey(apiKey);
             String encrypted = encrypt(apiKey);
 
@@ -326,9 +397,10 @@ public class AccountLinkingScreen extends Screen {
             SaveManagerMod.LOGGER.info("API key saved (encrypted)");
 
             if (this.client != null) {
-                this.client.setScreen(new SelectWorldScreen(this.parent));
+                Screen rootParent = sm$resolveWorldRootParent(this.parent);
+                this.client.setScreen(new SelectWorldScreen(rootParent));
             }
-        } catch (Exception e)            {
+        } catch (Exception e) {
             this.statusMessage = "Error: " + e.getMessage();
             SaveManagerMod.LOGGER.error("Error saving API key", e);
         }
@@ -388,37 +460,59 @@ public class AccountLinkingScreen extends Screen {
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         super.render(context, mouseX, mouseY, delta);
 
-        context.drawCenteredTextWithShadow(this.textRenderer, this.title, this.width / 2, 20, 0xFFFFFF);
+        int cx = this.width / 2;
+
+        // Recompute core Ys for consistent alignment with init()
+        int fieldY = this.height / 2 - 10;
+        int actionY = fieldY + 30;
+        int statusY = actionY + 26;
+
+        // Title and subtitle (centered)
+        context.drawCenteredTextWithShadow(this.textRenderer, this.title, cx, 10, 0xFFFFFFFF);
         context.drawCenteredTextWithShadow(
                 this.textRenderer,
                 Text.literal("Enter your API key to link your account"),
-                this.width / 2,
-                this.height / 4 - 10,
-                0xAAAAAA
+                cx,
+                fieldY - 14,
+                0xFFAAAAAA
         );
 
+        // Status below all buttons (centered)
         if (!this.statusMessage.isEmpty()) {
             context.drawCenteredTextWithShadow(
                     this.textRenderer,
                     Text.literal(this.statusMessage),
-                    this.width / 2,
-                    this.height / 4 + 115,
-                    0xFFFFFF
+                    cx,
+                    statusY,
+                    0xFFFFFFFF
             );
         }
 
-        boolean effectiveVisible = isEffectivelyVisible();
-
+        // Keep field text in sync
         if (maskingProviderInstalled) {
             this.tokenField.setText(realToken);
         } else {
-            if (effectiveVisible) {
-                this.tokenField.setText(realToken);
-            } else {
-                this.tokenField.setText(mask(realToken.length()));
-            }
+            this.tokenField.setText(isEffectivelyVisible() ? realToken : mask(realToken.length()));
         }
 
+        // TextFieldWidget must be rendered manually
         this.tokenField.render(context, mouseX, mouseY, delta);
+    }
+
+    private static Screen sm$resolveWorldRootParent(Screen parent) {
+        Screen p = parent;
+        int guard = 0;
+        while (p instanceof SelectWorldScreen && guard++ < 8) {
+            try {
+                Field f = SelectWorldScreen.class.getDeclaredField("parent");
+                f.setAccessible(true);
+                Screen next = (Screen) f.get(p);
+                if (next == null || next == p) break;
+                p = next;
+            } catch (Throwable ignored) {
+                break;
+            }
+        }
+        return p;
     }
 }
