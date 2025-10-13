@@ -30,7 +30,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.function.BiConsumer;
 
 public class NetworkManager {
-    private static final String BASE_URL = "https://localhost:7282";
+    private static final String BASE_URL = "https://choculaterie.com";
     private static final String API_KEY_HEADER = "X-Save-Key";
 
     // Dev-only: trust-all client to avoid PKIX with local self-signed certs

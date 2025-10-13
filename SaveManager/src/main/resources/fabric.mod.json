@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "savemanager",
   "version": "${version}",
-  "name": "Save Manager",
+  "name": "Cloud Save Manager",
   "description": "A mod for managing and syncing Minecraft world saves with the Choculaterie cloud storage",
   "authors": [
     "Choculat"
