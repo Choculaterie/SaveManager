@@ -1,0 +1,23 @@
+{
+  "mappings": {
+    "com/choculaterie/mixin/EntryListWidgetAccessor": {
+      "getRowLeft": "method_25342()I",
+      "getRowWidth": "method_25322()I"
+    },
+    "com/choculaterie/mixin/SinglePlayerScreenMixin": {
+      "init": "Lnet/minecraft/class_526;method_25426()V"
+    }
+  },
+  "data": {
+    "named:intermediary": {
+      "com/choculaterie/mixin/EntryListWidgetAccessor": {
+        "getRowLeft": "method_25342()I",
+        "getRowWidth": "method_25322()I"
+      },
+      "com/choculaterie/mixin/SinglePlayerScreenMixin": {
+        "init": "Lnet/minecraft/class_526;method_25426()V"
+      }
+    }
+  }
+}
+

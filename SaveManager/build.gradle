@@ -16,6 +16,8 @@ repositories {
 	// Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
 	// See https://docs.gradle.org/current/userguide/declaring_repositories.html
 	// for more information about repositories.
+	mavenCentral()
+	maven { url 'https://repo.spongepowered.org/maven' }
 }
 
 loom {
@@ -39,10 +41,26 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 	
+	// Add Mixin annotation processor so a proper refmap is generated at compile time
+	annotationProcessor "org.spongepowered:mixin:0.8.7"
+	// Gson is required by some annotation processors at compile-time
+	annotationProcessor "com.google.code.gson:gson:2.10.1"
+	// Guava is required by mixin annotation processor
+	annotationProcessor "com.google.guava:guava:32.1.2-jre"
 }
 
 processResources {
+    // Avoid failing when multiple refmap files are present — prefer the first and exclude duplicates
+    // This prevents the "Entry ... is a duplicate" error during the copy phase.
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
 	inputs.property "version", project.version
+
+	// Include any generated mixin refmap produced by the annotation processor (client-*-refmap.json)
+	from("${buildDir}/classes/java/client") {
+		include 'client-*refmap.json'
+		rename { String f -> 'savemanager.refmap.json' }
+	}
 
 	filesMatching("fabric.mod.json") {
 		expand "version": inputs.properties.version

@@ -202,7 +202,8 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     }
 
 
-    @Inject(method = "init", at = @At("RETURN"))
+    // Target the intermediary runtime name directly and disable remapping so Mixin finds the method
+    @Inject(method = "method_25426()V", remap = false, at = @At("RETURN"))
     private void savemanager$init(CallbackInfo ci) {
         this.parent = (Screen)(Object)this;
 
