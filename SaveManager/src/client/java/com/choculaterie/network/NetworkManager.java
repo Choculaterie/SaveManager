@@ -112,7 +112,8 @@ public class NetworkManager {
         final String CRLF = "\r\n";
 
         long fileSize = Files.size(zipFilePath);
-        String uploadBase = (fileSize > LARGE_UPLOAD_THRESHOLD) ? "https://upload.choculaterie.com" : BASE_URL;
+        // Always use upload subdomain for all uploads
+        String uploadBase = "https://upload.choculaterie.com";
 
         // Build multipart preamble and closing with exact bytes (UTF-8)
         String partWorldName =
@@ -143,27 +144,29 @@ public class NetworkManager {
                 }
 
                 conn.setDoOutput(true);
+                conn.setDoInput(true);
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty(API_KEY_HEADER, apiKey);
                 conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
                 conn.setRequestProperty("Accept", "application/json");
-                conn.setRequestProperty("Expect", "100-continue");
+                conn.setRequestProperty("Connection", "keep-alive");
+                conn.setRequestProperty("User-Agent", "SaveManager/1.0");
                 conn.setConnectTimeout(30_000);
                 conn.setReadTimeout(600_000);
 
-                // Fixed-length streaming so proxies like Cloudflare do not buffer chunked uploads
+                // Use fixed-length streaming mode for better compatibility
                 conn.setFixedLengthStreamingMode(contentLength);
 
+                // Write the request body
                 try (OutputStream rawOut = conn.getOutputStream();
-                     BufferedOutputStream out = new BufferedOutputStream(rawOut);
+                     BufferedOutputStream out = new BufferedOutputStream(rawOut, 128 * 1024);
                      InputStream in = Files.newInputStream(zipFilePath)) {
 
                     // Write preamble (not counted toward progress)
                     out.write(preamble);
-                    out.flush();
 
                     // Stream file content with progress (only count the file bytes)
-                    byte[] buf = new byte[64 * 1024];
+                    byte[] buf = new byte[128 * 1024]; // Larger buffer for better throughput
                     long sentFileBytes = 0L;
                     if (progressCallback != null) progressCallback.accept(0L, fileSize);
 
@@ -172,9 +175,14 @@ public class NetworkManager {
                         out.write(buf, 0, r);
                         sentFileBytes += r;
                         if (progressCallback != null) progressCallback.accept(sentFileBytes, fileSize);
+
+                        // Flush periodically to ensure data is sent
+                        if (sentFileBytes % (1024 * 1024) == 0) {
+                            out.flush();
+                        }
                     }
 
-                    // Write closing (not counted toward progress)
+                    // Write closing boundary
                     out.write(closing);
                     out.flush();
 
@@ -182,34 +190,68 @@ public class NetworkManager {
                     if (progressCallback != null) progressCallback.accept(fileSize, fileSize);
                 }
 
+                // Read response
                 int status = conn.getResponseCode();
                 InputStream respStream = (status >= 400) ? conn.getErrorStream() : conn.getInputStream();
-                String body;
+                String body = "";
                 if (respStream != null) {
                     try (respStream) {
                         body = new String(respStream.readAllBytes(), StandardCharsets.UTF_8);
                     }
-                } else {
-                    body = "";
                 }
 
                 if (status >= 400) {
-                    throw new RuntimeException("Request failed: " + status + " - " + body);
+                    // Provide user-friendly error messages for common issues
+                    String errorMsg;
+                    if (status == 413) {
+                        errorMsg = "File too large: Server's reverse proxy (nginx) is blocking uploads. " +
+                                "The server administrator needs to increase 'client_max_body_size' in nginx config.";
+                    } else if (status == 401 || status == 403) {
+                        errorMsg = "Authentication failed: Please check your API key in settings.";
+                    } else if (status == 429) {
+                        errorMsg = "Rate limit exceeded: Too many requests. Please try again later.";
+                    } else {
+                        // Strip HTML tags from error body for cleaner display
+                        String cleanBody = body.replaceAll("<[^>]+>", "").trim();
+                        if (cleanBody.length() > 200) {
+                            cleanBody = cleanBody.substring(0, 200) + "...";
+                        }
+                        errorMsg = "HTTP " + status + (cleanBody.isEmpty() ? "" : ": " + cleanBody);
+                    }
+                    throw new RuntimeException(errorMsg);
                 }
 
-                if (body == null || body.isBlank()) {
-                    return new JsonObject();
+                if (body.isBlank()) {
+                    JsonObject result = new JsonObject();
+                    result.addProperty("status", "success");
+                    return result;
                 }
+
                 try {
                     return JsonParser.parseString(body).getAsJsonObject();
                 } catch (Exception parseEx) {
-                    // Fallback if server returns non-object JSON
+                    // Fallback if server returns non-JSON
                     JsonObject obj = new JsonObject();
                     obj.addProperty("raw", body);
+                    obj.addProperty("status", "success");
                     return obj;
                 }
+            } catch (IOException ioEx) {
+                // Try to get more details from the connection
+                String errorDetails = "IO Error: " + ioEx.getMessage();
+                if (conn != null) {
+                    try {
+                        int status = conn.getResponseCode();
+                        InputStream errStream = conn.getErrorStream();
+                        if (errStream != null) {
+                            String errBody = new String(errStream.readAllBytes(), StandardCharsets.UTF_8);
+                            errorDetails = "HTTP " + status + ": " + errBody;
+                        }
+                    } catch (Exception ignored) {}
+                }
+                throw new RuntimeException("Upload failed: " + errorDetails, ioEx);
             } catch (Exception e) {
-                throw new RuntimeException(e);
+                throw new RuntimeException("Upload failed: " + e.getMessage(), e);
             } finally {
                 if (conn != null) {
                     try { conn.disconnect(); } catch (Throwable ignored) {}
