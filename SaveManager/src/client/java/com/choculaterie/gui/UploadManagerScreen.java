@@ -104,7 +104,9 @@ public class UploadManagerScreen extends Screen {
             if (currentPage > 0) {
                 currentPage--;
                 selectedIndex = -1;
-                this.clearAndInit();
+                buildRowHitBoxes();
+                rebuildPagerState();
+                updateActionButtons();
             }
         }).dimensions(this.width - 55, bottomY, 20, 20).build();
         this.addDrawableChild(prevBtn);
@@ -113,7 +115,9 @@ public class UploadManagerScreen extends Screen {
             if ((currentPage + 1) * PAGE_SIZE < saves.size()) {
                 currentPage++;
                 selectedIndex = -1;
-                this.clearAndInit();
+                buildRowHitBoxes();
+                rebuildPagerState();
+                updateActionButtons();
             }
         }).dimensions(this.width - 30, bottomY, 20, 20).build();
         this.addDrawableChild(nextBtn);
@@ -137,8 +141,8 @@ public class UploadManagerScreen extends Screen {
     }
 
     @Override
-    public void resize(MinecraftClient client, int width, int height) {
-        super.resize(client, width, height);
+    public void resize(int width, int height) {
+        super.resize(width, height);
         this.clearAndInit();
     }
 

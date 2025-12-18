@@ -25,7 +25,7 @@ public abstract class SinglePlayerScreenMixin extends Screen {
     @Unique private static final int LEFT_MARGIN = 6;
     @Unique private static final int TOP_MARGIN = 6;
 
-    @Inject(method = "init()V", at = @At("TAIL"), remap = true)
+    @Inject(method = "init", at = @At("TAIL"), remap = false)
     private void savemanager$init(CallbackInfo ci) {
         // Place two fixed-position buttons in the top-left corner
         int x = LEFT_MARGIN;
