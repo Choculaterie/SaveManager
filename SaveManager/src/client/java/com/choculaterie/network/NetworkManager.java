@@ -1,6 +1,5 @@
 package com.choculaterie.network;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -26,20 +25,16 @@ import java.security.cert.X509Certificate;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.nio.file.StandardCopyOption;
 import java.util.function.BiConsumer;
 
 public class NetworkManager {
     private static final String BASE_URL = "https://choculaterie.com";
     private static final String API_KEY_HEADER = "X-Save-Key";
 
-    private static final long LARGE_UPLOAD_THRESHOLD = 99L * 1024 * 1024; // 99 MiB
-
-    // Dev-only: trust-all client to avoid PKIX with local self-signed certs
     private static final HttpClient INSECURE_CLIENT;
-    // For HttpsURLConnection (used by our streaming upload path) - dev-only trust-all
     private static final SSLSocketFactory INSECURE_SSLSF;
     private static final HostnameVerifier INSECURE_HV;
+
     static {
         try {
             TrustManager[] trustAllCerts = new TrustManager[]{
@@ -51,8 +46,6 @@ public class NetworkManager {
             };
             SSLContext ssl = SSLContext.getInstance("TLS");
             ssl.init(null, trustAllCerts, new SecureRandom());
-            // Make this SSLContext the JVM default (dev convenience) so other libraries
-            // that rely on SSLContext.getDefault() will also use the trust-all context.
             try { SSLContext.setDefault(ssl); } catch (Throwable ignored) {}
             INSECURE_CLIENT = HttpClient.newBuilder()
                     .sslContext(ssl)
@@ -60,30 +53,26 @@ public class NetworkManager {
                     .build();
             INSECURE_SSLSF = ssl.getSocketFactory();
             INSECURE_HV = (hostname, session) -> true;
-            // Apply as defaults for HttpsURLConnection too (dev-time convenience)
             try {
                 HttpsURLConnection.setDefaultSSLSocketFactory(INSECURE_SSLSF);
                 HttpsURLConnection.setDefaultHostnameVerifier(INSECURE_HV);
             } catch (Throwable ignored) {}
-         } catch (Exception e) {
-             throw new RuntimeException("Failed to initialize HttpClient with custom SSL context", e);
-         }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to initialize HttpClient with custom SSL context", e);
+        }
     }
 
     private final HttpClient httpClient;
-    private final Gson gson;
     private String apiKey;
 
     public NetworkManager() {
         this.httpClient = INSECURE_CLIENT;
-        this.gson = new Gson();
     }
 
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
     public String getApiKey() { return apiKey; }
 
     public String getApiTokenGenerationUrl() {
-        // MVC view that issues/refreshes the Save Key
         return BASE_URL + "/api/SaveManagerAPI/GenerateSaveToken";
     }
 
@@ -98,11 +87,6 @@ public class NetworkManager {
                 .thenApply(this::handleJsonResponse);
     }
 
-    // Keep the two-arg convenience method that delegates to the new overload
-    public CompletableFuture<JsonObject> uploadWorldSave(String worldName, Path zipFilePath) throws IOException {
-        return uploadWorldSave(worldName, zipFilePath, null);
-    }
-
     public CompletableFuture<JsonObject> uploadWorldSave(String worldName, Path zipFilePath, BiConsumer<Long, Long> progressCallback) throws IOException {
         validateApiKey();
 
@@ -112,23 +96,18 @@ public class NetworkManager {
         final String CRLF = "\r\n";
 
         long fileSize = Files.size(zipFilePath);
-        // Always use upload subdomain for all uploads
         String uploadBase = "https://upload.choculaterie.com";
 
-        // Build multipart preamble and closing with exact bytes (UTF-8)
-        String partWorldName =
-                "--" + boundary + CRLF +
-                        "Content-Disposition: form-data; name=\"WorldName\"" + CRLF + CRLF +
-                        safeWorldName + CRLF;
+        String partWorldName = "--" + boundary + CRLF +
+                "Content-Disposition: form-data; name=\"WorldName\"" + CRLF + CRLF +
+                safeWorldName + CRLF;
 
-        String partFileHeader =
-                "--" + boundary + CRLF +
-                        "Content-Disposition: form-data; name=\"SaveFile\"; filename=\"" + fileName + "\"" + CRLF +
-                        "Content-Type: application/zip" + CRLF + CRLF;
+        String partFileHeader = "--" + boundary + CRLF +
+                "Content-Disposition: form-data; name=\"SaveFile\"; filename=\"" + fileName + "\"" + CRLF +
+                "Content-Type: application/zip" + CRLF + CRLF;
 
         byte[] preamble = (partWorldName + partFileHeader).getBytes(StandardCharsets.UTF_8);
         byte[] closing = (CRLF + "--" + boundary + "--" + CRLF).getBytes(StandardCharsets.UTF_8);
-
         long contentLength = preamble.length + fileSize + closing.length;
 
         return CompletableFuture.supplyAsync(() -> {
@@ -153,20 +132,15 @@ public class NetworkManager {
                 conn.setRequestProperty("User-Agent", "SaveManager/1.0");
                 conn.setConnectTimeout(30_000);
                 conn.setReadTimeout(600_000);
-
-                // Use fixed-length streaming mode for better compatibility
                 conn.setFixedLengthStreamingMode(contentLength);
 
-                // Write the request body
                 try (OutputStream rawOut = conn.getOutputStream();
                      BufferedOutputStream out = new BufferedOutputStream(rawOut, 128 * 1024);
                      InputStream in = Files.newInputStream(zipFilePath)) {
 
-                    // Write preamble (not counted toward progress)
                     out.write(preamble);
 
-                    // Stream file content with progress (only count the file bytes)
-                    byte[] buf = new byte[128 * 1024]; // Larger buffer for better throughput
+                    byte[] buf = new byte[128 * 1024];
                     long sentFileBytes = 0L;
                     if (progressCallback != null) progressCallback.accept(0L, fileSize);
 
@@ -175,22 +149,15 @@ public class NetworkManager {
                         out.write(buf, 0, r);
                         sentFileBytes += r;
                         if (progressCallback != null) progressCallback.accept(sentFileBytes, fileSize);
-
-                        // Flush periodically to ensure data is sent
-                        if (sentFileBytes % (1024 * 1024) == 0) {
-                            out.flush();
-                        }
+                        if (sentFileBytes % (1024 * 1024) == 0) out.flush();
                     }
 
-                    // Write closing boundary
                     out.write(closing);
                     out.flush();
 
-                    // Ensure final 100%
                     if (progressCallback != null) progressCallback.accept(fileSize, fileSize);
                 }
 
-                // Read response
                 int status = conn.getResponseCode();
                 InputStream respStream = (status >= 400) ? conn.getErrorStream() : conn.getInputStream();
                 String body = "";
@@ -201,21 +168,16 @@ public class NetworkManager {
                 }
 
                 if (status >= 400) {
-                    // Provide user-friendly error messages for common issues
                     String errorMsg;
                     if (status == 413) {
-                        errorMsg = "File too large: Server's reverse proxy (nginx) is blocking uploads. " +
-                                "The server administrator needs to increase 'client_max_body_size' in nginx config.";
+                        errorMsg = "File too large: Server's reverse proxy is blocking uploads.";
                     } else if (status == 401 || status == 403) {
-                        errorMsg = "Authentication failed: Please check your API key in settings.";
+                        errorMsg = "Authentication failed: Please check your API key.";
                     } else if (status == 429) {
-                        errorMsg = "Rate limit exceeded: Too many requests. Please try again later.";
+                        errorMsg = "Rate limit exceeded. Please try again later.";
                     } else {
-                        // Strip HTML tags from error body for cleaner display
                         String cleanBody = body.replaceAll("<[^>]+>", "").trim();
-                        if (cleanBody.length() > 200) {
-                            cleanBody = cleanBody.substring(0, 200) + "...";
-                        }
+                        if (cleanBody.length() > 200) cleanBody = cleanBody.substring(0, 200) + "...";
                         errorMsg = "HTTP " + status + (cleanBody.isEmpty() ? "" : ": " + cleanBody);
                     }
                     throw new RuntimeException(errorMsg);
@@ -230,14 +192,12 @@ public class NetworkManager {
                 try {
                     return JsonParser.parseString(body).getAsJsonObject();
                 } catch (Exception parseEx) {
-                    // Fallback if server returns non-JSON
                     JsonObject obj = new JsonObject();
                     obj.addProperty("raw", body);
                     obj.addProperty("status", "success");
                     return obj;
                 }
             } catch (IOException ioEx) {
-                // Try to get more details from the connection
                 String errorDetails = "IO Error: " + ioEx.getMessage();
                 if (conn != null) {
                     try {
@@ -262,7 +222,6 @@ public class NetworkManager {
 
     public CompletableFuture<java.util.List<String>> listWorldSaveNames() {
         validateApiKey();
-
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/names"))
                 .header(API_KEY_HEADER, apiKey)
@@ -274,36 +233,25 @@ public class NetworkManager {
                     if (response.statusCode() >= 400) {
                         throw new RuntimeException("Request failed: " + response.statusCode() + " - " + response.body());
                     }
-
                     String body = response.body();
                     java.util.Optional<String> ct = response.headers().firstValue("Content-Type");
                     if (ct.map(s -> s.contains("text/html")).orElse(false) || body.startsWith("<!DOCTYPE")) {
-                        throw new RuntimeException("Unexpected HTML response from server. Check the API URL.");
+                        throw new RuntimeException("Unexpected HTML response from server.");
                     }
-
                     com.google.gson.JsonArray arr = com.google.gson.JsonParser.parseString(body).getAsJsonArray();
                     java.util.List<String> out = new java.util.ArrayList<>();
                     for (com.google.gson.JsonElement e : arr) {
-                        if (e != null && e.isJsonPrimitive()) {
-                            out.add(e.getAsString());
-                        }
+                        if (e != null && e.isJsonPrimitive()) out.add(e.getAsString());
                     }
                     return out;
                 });
     }
 
-    public CompletableFuture<Path> downloadWorldSave(String saveId, Path destinationDirectory) {
-        return downloadWorldSave(saveId, destinationDirectory, null);
-    }
-
-    // Streamed download with progress callback (downloadedBytes, totalBytes or -1 if unknown)
     public CompletableFuture<Path> downloadWorldSave(String saveId, Path destinationDirectory, BiConsumer<Long, Long> progressCallback) {
         validateApiKey();
-
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/download/" + saveId))
                 .header(API_KEY_HEADER, apiKey)
-                // Important: avoid transparent gzip -> keeps Content-Length so we can show percent
                 .header("Accept-Encoding", "identity")
                 .GET()
                 .build();
@@ -320,11 +268,7 @@ public class NetworkManager {
                         }
                     }
 
-                    // Try several header names for total length
-                    long total = firstLongHeader(response, "Content-Length", "X-Content-Length", "X-File-Size", "X-Total-Length")
-                            .orElse(-1L);
-
-                    // Emit initial progress with known total, even before first bytes
+                    long total = firstLongHeader(response, "Content-Length", "X-Content-Length", "X-File-Size", "X-Total-Length").orElse(-1L);
                     if (progressCallback != null) {
                         try { progressCallback.accept(0L, total); } catch (Throwable ignored) {}
                     }
@@ -356,7 +300,6 @@ public class NetworkManager {
                             Files.move(temp, finalPath, StandardCopyOption.REPLACE_EXISTING);
                         }
 
-                        // Final tick with exact size
                         long finalSize = Files.size(finalPath);
                         if (progressCallback != null) {
                             long finalTotal = (total > 0) ? total : finalSize;
@@ -369,7 +312,17 @@ public class NetworkManager {
                 }));
     }
 
-    // Overload works with any HttpResponse type
+    public CompletableFuture<JsonObject> deleteWorldSave(String saveId) {
+        validateApiKey();
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/delete/" + saveId))
+                .header(API_KEY_HEADER, apiKey)
+                .DELETE()
+                .build();
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(this::handleJsonResponse);
+    }
+
     private String extractFileNameFromResponse(HttpResponse<?> response) {
         String def = "world_save.zip";
         return response.headers()
@@ -402,19 +355,6 @@ public class NetworkManager {
         return Optional.empty();
     }
 
-    public CompletableFuture<JsonObject> deleteWorldSave(String saveId) {
-        validateApiKey();
-
-        HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/delete/" + saveId))
-                .header(API_KEY_HEADER, apiKey)
-                .DELETE()
-                .build();
-
-        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
-                .thenApply(this::handleJsonResponse);
-    }
-
     private void validateApiKey() {
         if (apiKey == null || apiKey.isEmpty()) {
             throw new IllegalStateException("API key is not set");
@@ -425,11 +365,10 @@ public class NetworkManager {
         if (response.statusCode() >= 400) {
             throw new RuntimeException("Request failed: " + response.statusCode() + " - " + response.body());
         }
-        // Guard: if we accidentally hit an HTML page (e.g., wrong route/login page), fail clearly
         Optional<String> ct = response.headers().firstValue("Content-Type");
         String body = response.body();
         if (ct.map(s -> s.contains("text/html")).orElse(false) || body.startsWith("<!DOCTYPE")) {
-            throw new RuntimeException("Unexpected HTML response from server. Check the API URL.");
+            throw new RuntimeException("Unexpected HTML response from server.");
         }
         return JsonParser.parseString(body).getAsJsonObject();
     }
