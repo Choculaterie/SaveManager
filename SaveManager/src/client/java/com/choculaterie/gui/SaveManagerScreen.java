@@ -101,24 +101,22 @@ public class SaveManagerScreen extends Screen {
         addCustomButton(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2 + btnW + 10, bottomY, btnW, 20, Text.literal("Delete"), b -> onDelete());
         String apiKey = loadApiKeyFromDisk();
         if (apiKey == null || apiKey.isBlank()) {
+            client.setScreen(new AccountLinkingScreen(this));
+            return;
+        }
+        networkManager.setApiKey(apiKey);
+        long now = System.currentTimeMillis();
+        boolean shouldReload = (now - lastLoadTimeMs) > RELOAD_THRESHOLD_MS || cachedLocalSaves.isEmpty();
+        if (shouldReload) {
+            fetchLocalSaves();
+            fetchCloudSaves();
+        } else {
+            localSaves.clear();
+            localSaves.addAll(cachedLocalSaves);
+            cloudSaves.clear();
+            cloudSaves.addAll(cachedCloudSaves);
             localLoading = false;
             cloudLoading = false;
-            toastManager.showWarning("No API key configured");
-        } else {
-            networkManager.setApiKey(apiKey);
-            long now = System.currentTimeMillis();
-            boolean shouldReload = (now - lastLoadTimeMs) > RELOAD_THRESHOLD_MS || cachedLocalSaves.isEmpty();
-            if (shouldReload) {
-                fetchLocalSaves();
-                fetchCloudSaves();
-            } else {
-                localSaves.clear();
-                localSaves.addAll(cachedLocalSaves);
-                cloudSaves.clear();
-                cloudSaves.addAll(cachedCloudSaves);
-                localLoading = false;
-                cloudLoading = false;
-            }
         }
     }
 
@@ -158,7 +156,8 @@ public class SaveManagerScreen extends Screen {
                 }
                 tmp.sort(Comparator.comparingLong((LocalSave s) -> s.lastModified).reversed());
             } catch (Exception e) {
-                SaveManagerMod.LOGGER.error("SaveManager: error scanning saves", e);
+                String cleanError = extractErrorMessage(e);
+                SaveManagerMod.LOGGER.warn("LocalSaveManager: error scanning saves - {}", cleanError);
             }
             runOnClient(() -> {
                 localSaves.clear();
@@ -176,7 +175,8 @@ public class SaveManagerScreen extends Screen {
         cloudLoading = true;
         networkManager.listWorldSaves().whenComplete((json, err) -> {
             if (err != null) {
-                SaveManagerMod.LOGGER.error("SaveManager: cloud list failed", err);
+                String cleanError = extractErrorMessage(err);
+                SaveManagerMod.LOGGER.warn("CloudSaveManager: list failed - {}", cleanError);
                 runOnClient(() -> {
                     cloudLoading = false;
                     cloudSaves.clear();
@@ -204,7 +204,8 @@ public class SaveManagerScreen extends Screen {
                     }
                 }
             } catch (Throwable parseEx) {
-                SaveManagerMod.LOGGER.error("SaveManager: parse error", parseEx);
+                String cleanError = extractErrorMessage(parseEx);
+                SaveManagerMod.LOGGER.warn("CloudSaveManager: parse error - {}", cleanError);
             }
             runOnClient(() -> {
                 cloudSaves.clear();
@@ -219,15 +220,16 @@ public class SaveManagerScreen extends Screen {
     }
     private void onUpload() {
         if (localSelectedIndex < 0 || localSelectedIndex >= localSaves.size()) return;
-        LocalSave s = localSaves.get(localSelectedIndex);
         if (networkManager.getApiKey() == null || networkManager.getApiKey().isBlank()) {
             client.setScreen(new AccountLinkingScreen(this));
             return;
         }
+        LocalSave s = localSaves.get(localSelectedIndex);
         localLoading = true;
         networkManager.listWorldSaveNames().whenComplete((names, err) -> runOnClient(() -> {
             if (err != null) {
-                beginZipAndUpload(s);
+                localLoading = false;
+                client.setScreen(new AccountLinkingScreen(this));
                 return;
             }
             String sanitized = sanitizeFolderName(s.worldName);
@@ -274,7 +276,8 @@ public class SaveManagerScreen extends Screen {
             try {
                 zip = zipWorld(s.dir, s.worldName.replaceAll("[\\\\/:*?\"<>|]+", "_"));
             } catch (Exception ex) {
-                SaveManagerMod.LOGGER.error("SaveManager: zip failed", ex);
+                String cleanError = extractErrorMessage(ex);
+                SaveManagerMod.LOGGER.warn("ZipManager: zip failed - {}", cleanError);
                 runOnClient(() -> {
                     ACTIVE.upActive = false;
                     ACTIVE.zipping = false;
@@ -304,7 +307,8 @@ public class SaveManagerScreen extends Screen {
                 ACTIVE.zipping = false;
                 localLoading = false;
                 if (err != null) {
-                    SaveManagerMod.LOGGER.error("SaveManager: upload failed", err);
+                    String cleanError = extractErrorMessage(err);
+                    SaveManagerMod.LOGGER.warn("UploadManager: upload failed - {}", cleanError);
                     toastManager.showError("Upload failed");
                 } else {
                     toastManager.showSuccess("Upload complete: " + worldName);
@@ -347,7 +351,8 @@ public class SaveManagerScreen extends Screen {
         }).whenComplete((zipPath, err) -> {
             ACTIVE.dlActive = false;
             if (err != null) {
-                SaveManagerMod.LOGGER.error("SaveManager: download failed", err);
+                String cleanError = extractErrorMessage(err);
+                SaveManagerMod.LOGGER.warn("DownloadManager: download failed - {}", cleanError);
                 runOnClient(() -> {
                     cloudLoading = false;
                     toastManager.showError("Download failed");
@@ -366,7 +371,8 @@ public class SaveManagerScreen extends Screen {
                     fetchLocalSaves();
                 });
             } catch (Exception ex) {
-                SaveManagerMod.LOGGER.error("SaveManager: unzip failed", ex);
+                String cleanError = extractErrorMessage(ex);
+                SaveManagerMod.LOGGER.warn("UnzipManager: unzip failed - {}", cleanError);
                 runOnClient(() -> toastManager.showError("Unzip failed"));
             } finally {
                 try { Files.deleteIfExists(zipPath); } catch (Exception ignored) {}
@@ -391,7 +397,8 @@ public class SaveManagerScreen extends Screen {
                 cloudLoading = true;
                 networkManager.deleteWorldSave(s.id).whenComplete((resp, err) -> runOnClient(() -> {
                     if (err != null) {
-                        SaveManagerMod.LOGGER.error("Delete failed", err);
+                        String cleanError = extractErrorMessage(err);
+                        SaveManagerMod.LOGGER.warn("DeleteManager: delete failed - {}", cleanError);
                         toastManager.showError("Delete failed");
                         cloudLoading = false;
                         return;
@@ -472,7 +479,6 @@ public class SaveManagerScreen extends Screen {
         scrollBar.setScrollData(saves.size() * ROW_HEIGHT, listH);
         if (maxScroll > 0) scrollBar.setScrollPercentage((double) scrollOffset / maxScroll);
 
-        // Don't allow hover effects if mouse is over toast or confirm popup
         boolean blockHover = toastManager.isMouseOverToast(mouseX, mouseY) || confirmPopup != null;
 
         long windowHandle = client.getWindow().getHandle();
@@ -489,7 +495,6 @@ public class SaveManagerScreen extends Screen {
         for (int i = scrollOffset; i < end; i++) {
             int ry = listY + (i - scrollOffset) * ROW_HEIGHT;
 
-            // Only show hover if not blocked and mouse is actually hovering this row
             boolean isHovered = !blockHover && i == selectedIndex;
             if (isHovered) {
                 ctx.fill(panelX, ry - 1, panelX + panelW, ry + ROW_HEIGHT - 2, 0x66FFFFFF);
@@ -543,33 +548,27 @@ public class SaveManagerScreen extends Screen {
         double mouseX = click.x();
         double mouseY = click.y();
         int button = click.button();
-        
-        // Handle confirmPopup first (highest priority)
+
         if (confirmPopup != null) {
             return confirmPopup.mouseClicked(click, consumed);
         }
 
-        // Handle toast clicks before anything else
         if (toastManager.mouseClicked(click, consumed)) {
             return true;
         }
 
-        // Block all interactions if mouse is over a toast
         if (toastManager.isMouseOverToast(mouseX, mouseY)) {
             return true;
         }
 
-        // If already consumed, return
         if (consumed) {
             return true;
         }
 
-        // Handle button clicks
         if (super.mouseClicked(click, false)) {
             return true;
         }
 
-        // Handle list item selection
         if (button == 0 && !localLoading && !cloudLoading && !ACTIVE.dlActive && !ACTIVE.upActive) {
             if (mouseX >= localPanelX && mouseX < localPanelX + localPanelW && mouseY >= listY && mouseY < listY + listH) {
                 int rowIdx = (int) ((mouseY - listY) / ROW_HEIGHT) + localScrollOffset;
@@ -592,7 +591,6 @@ public class SaveManagerScreen extends Screen {
     }
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
-        // Handle confirmPopup scrolling first
         if (confirmPopup != null) {
             if (confirmPopup.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)) {
                 return true;
@@ -622,6 +620,43 @@ public class SaveManagerScreen extends Screen {
     private void runOnClient(Runnable r) {
         if (client != null) client.execute(r);
     }
+
+    private static String extractErrorMessage(Throwable err) {
+        if (err == null) return "Unknown error";
+
+        Throwable cause = err;
+        while (cause.getCause() != null &&
+               (cause instanceof java.util.concurrent.CompletionException ||
+                cause instanceof java.util.concurrent.ExecutionException)) {
+            cause = cause.getCause();
+        }
+
+        String msg = cause.getMessage();
+        if (msg == null || msg.isBlank()) {
+            msg = cause.getClass().getSimpleName();
+        }
+
+        msg = msg.replaceFirst("^Request failed: \\d+ - ", "");
+        msg = msg.replaceFirst("^Upload failed: ", "");
+        msg = msg.replaceFirst("^HTTP \\d+: ", "");
+
+        if (msg.contains("{") && msg.contains("\"error\"")) {
+            try {
+                int start = msg.indexOf('{');
+                int end = msg.lastIndexOf('}') + 1;
+                if (start >= 0 && end > start) {
+                    String jsonPart = msg.substring(start, end);
+                    JsonObject json = new Gson().fromJson(jsonPart, JsonObject.class);
+                    if (json != null && json.has("error")) {
+                        return json.get("error").getAsString();
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        return msg;
+    }
+
     private static String safe(String s) { return s == null ? "" : s; }
     private static String shortDate(String iso) {
         if (iso == null) return "";
@@ -759,7 +794,8 @@ public class SaveManagerScreen extends Screen {
                 if (json.has("apiToken")) return json.get("apiToken").getAsString();
             }
         } catch (Exception e) {
-            SaveManagerMod.LOGGER.error("Error loading API key", e);
+            String cleanError = extractErrorMessage(e);
+            SaveManagerMod.LOGGER.warn("ConfigManager: error loading API key - {}", cleanError);
         }
         return null;
     }
@@ -822,5 +858,9 @@ public class SaveManagerScreen extends Screen {
             s.updatedAt = getString(o, "updatedAt", "updated", "updated_on", "lastModified");
             return s;
         }
+    }
+
+    public Screen getParent() {
+        return parent;
     }
 }

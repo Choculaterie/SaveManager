@@ -32,6 +32,8 @@ public class CustomTextField extends TextFieldWidget {
     private boolean wasRightPressed = false;
     private boolean wasHomePressed = false;
     private boolean wasEndPressed = false;
+    private boolean wasCtrlCPressed = false;
+    private boolean wasCtrlVPressed = false;
 
     private long backspaceHoldStart = 0;
     private long deleteHoldStart = 0;
@@ -275,5 +277,34 @@ public class CustomTextField extends TextFieldWidget {
 
         boolean isEscapeDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS;
         if (isEscapeDown) this.setFocused(false);
+
+        boolean isCtrlDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
+                GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
+
+        boolean isCtrlCDown = isCtrlDown && GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_C) == GLFW.GLFW_PRESS;
+        if (isCtrlCDown && !wasCtrlCPressed) {
+            String textToCopy = this.getText();
+            if (!textToCopy.isEmpty()) {
+                GLFW.glfwSetClipboardString(windowHandle, textToCopy);
+            }
+        }
+        wasCtrlCPressed = isCtrlCDown;
+
+        boolean isCtrlVDown = isCtrlDown && GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_V) == GLFW.GLFW_PRESS;
+        if (isCtrlVDown && !wasCtrlVPressed) {
+            String clipboardText = GLFW.glfwGetClipboardString(windowHandle);
+            if (clipboardText != null && !clipboardText.isEmpty()) {
+                String sanitized = clipboardText.replaceAll("[\\r\\n]+", "");
+                if (!sanitized.isEmpty()) {
+                    String newText = currentText.substring(0, cursorPos) + sanitized + currentText.substring(cursorPos);
+                    if (newText.length() <= 256) {
+                        this.setText(newText);
+                        this.setCursor(cursorPos + sanitized.length(), false);
+                        if (onChanged != null) onChanged.run();
+                    }
+                }
+            }
+        }
+        wasCtrlVPressed = isCtrlVDown;
     }
 }

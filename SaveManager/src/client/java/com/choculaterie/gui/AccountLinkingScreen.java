@@ -178,7 +178,8 @@ public class AccountLinkingScreen extends Screen {
                 }
             }
         } catch (Exception e) {
-            SaveManagerMod.LOGGER.error("Error loading API key", e);
+            String cleanError = extractErrorMessage(e);
+            SaveManagerMod.LOGGER.warn("ConfigManager: error loading API key - {}", cleanError);
             toastManager.showError("Error loading saved API key");
         }
     }
@@ -204,7 +205,8 @@ public class AccountLinkingScreen extends Screen {
             }
             closeScreen();
         } catch (Exception e) {
-            SaveManagerMod.LOGGER.error("Error saving API key", e);
+            String cleanError = extractErrorMessage(e);
+            SaveManagerMod.LOGGER.warn("ConfigManager: error saving API key - {}", cleanError);
             toastManager.showError("Error saving API key");
         }
     }
@@ -230,7 +232,8 @@ public class AccountLinkingScreen extends Screen {
                 }
             }
         } catch (Exception e) {
-            SaveManagerMod.LOGGER.error("Error clearing config token", e);
+            String cleanError = extractErrorMessage(e);
+            SaveManagerMod.LOGGER.warn("ConfigManager: error clearing config - {}", cleanError);
         }
     }
 
@@ -238,19 +241,41 @@ public class AccountLinkingScreen extends Screen {
         try {
             net.minecraft.util.Util.getOperatingSystem().open(networkManager.getApiTokenGenerationUrl());
         } catch (Exception e) {
-            SaveManagerMod.LOGGER.error("Failed to open API key website", e);
+            String cleanError = extractErrorMessage(e);
+            SaveManagerMod.LOGGER.warn("BrowserManager: failed to open API key website - {}", cleanError);
             toastManager.showError("Could not open browser");
         }
     }
 
     private void closeScreen() {
         if (client != null) {
-            if (parent instanceof SaveManagerScreen) {
-                client.setScreen(parent);
+            String apiKey = loadApiKeyFromDisk();
+            if (apiKey != null && !apiKey.isBlank()) {
+                if (parent instanceof SaveManagerScreen) {
+                    client.setScreen(parent);
+                } else {
+                    client.setScreen(new SaveManagerScreen(resolveRootParent(parent)));
+                }
             } else {
-                client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
+                client.setScreen(new SelectWorldScreen(resolveRootParent(parent instanceof SaveManagerScreen ? ((SaveManagerScreen) parent).getParent() : parent)));
             }
         }
+    }
+
+    private String loadApiKeyFromDisk() {
+        try {
+            File configFile = new File(new File(client.runDirectory, "config"), CONFIG_FILE);
+            if (!configFile.exists()) return null;
+            try (FileReader reader = new FileReader(configFile)) {
+                JsonObject json = new Gson().fromJson(reader, JsonObject.class);
+                if (json == null) return null;
+                if (json.has("encryptedApiToken")) return decrypt(json.get("encryptedApiToken").getAsString());
+                if (json.has("apiToken")) return json.get("apiToken").getAsString();
+            }
+        } catch (Exception e) {
+            return null;
+        }
+        return null;
     }
 
     @Override
@@ -270,6 +295,24 @@ public class AccountLinkingScreen extends Screen {
 
     private static String mask(int len) {
         return "*".repeat(Math.max(0, len));
+    }
+
+    private static String extractErrorMessage(Throwable err) {
+        if (err == null) return "Unknown error";
+
+        Throwable cause = err;
+        while (cause.getCause() != null &&
+               (cause instanceof java.util.concurrent.CompletionException ||
+                cause instanceof java.util.concurrent.ExecutionException)) {
+            cause = cause.getCause();
+        }
+
+        String msg = cause.getMessage();
+        if (msg == null || msg.isBlank()) {
+            msg = cause.getClass().getSimpleName();
+        }
+
+        return msg;
     }
 
     private String encrypt(String input) throws Exception {
