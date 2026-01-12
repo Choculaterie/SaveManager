@@ -180,7 +180,11 @@ public class SaveManagerScreen extends Screen {
                 runOnClient(() -> {
                     cloudLoading = false;
                     cloudSaves.clear();
-                    toastManager.showError("Cloud list failed");
+                    if (cleanError.contains("account must be linked")) {
+                        toastManager.showError(cleanError, "Profile -> Edit profile -> Link");
+                    } else {
+                        toastManager.showError(cleanError);
+                    }
                 });
                 return;
             }
@@ -282,7 +286,7 @@ public class SaveManagerScreen extends Screen {
                     ACTIVE.upActive = false;
                     ACTIVE.zipping = false;
                     localLoading = false;
-                    toastManager.showError("Zip failed");
+                    toastManager.showError(cleanError);
                 });
                 return;
             }
@@ -309,7 +313,7 @@ public class SaveManagerScreen extends Screen {
                 if (err != null) {
                     String cleanError = extractErrorMessage(err);
                     SaveManagerMod.LOGGER.warn("UploadManager: upload failed - {}", cleanError);
-                    toastManager.showError("Upload failed");
+                    toastManager.showError(cleanError);
                 } else {
                     toastManager.showSuccess("Upload complete: " + worldName);
                     fetchLocalSaves();
@@ -355,7 +359,7 @@ public class SaveManagerScreen extends Screen {
                 SaveManagerMod.LOGGER.warn("DownloadManager: download failed - {}", cleanError);
                 runOnClient(() -> {
                     cloudLoading = false;
-                    toastManager.showError("Download failed");
+                    toastManager.showError(cleanError);
                 });
                 return;
             }
@@ -373,7 +377,7 @@ public class SaveManagerScreen extends Screen {
             } catch (Exception ex) {
                 String cleanError = extractErrorMessage(ex);
                 SaveManagerMod.LOGGER.warn("UnzipManager: unzip failed - {}", cleanError);
-                runOnClient(() -> toastManager.showError("Unzip failed"));
+                runOnClient(() -> toastManager.showError(cleanError));
             } finally {
                 try { Files.deleteIfExists(zipPath); } catch (Exception ignored) {}
                 try { Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
@@ -399,7 +403,7 @@ public class SaveManagerScreen extends Screen {
                     if (err != null) {
                         String cleanError = extractErrorMessage(err);
                         SaveManagerMod.LOGGER.warn("DeleteManager: delete failed - {}", cleanError);
-                        toastManager.showError("Delete failed");
+                        toastManager.showError(cleanError);
                         cloudLoading = false;
                         return;
                     }
@@ -453,6 +457,7 @@ public class SaveManagerScreen extends Screen {
             spinner.render(ctx, mouseX, mouseY, delta);
             ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Loading..."), cx, statusY + 40, 0xFFFFFFFF);
         }
+
         toastManager.render(ctx, delta, mouseX, mouseY);
 
         if (confirmPopup != null) {
@@ -742,6 +747,9 @@ public class SaveManagerScreen extends Screen {
                     return FileVisitResult.CONTINUE;
                 }
             });
+        } catch (Exception e) {
+            try { Files.deleteIfExists(zip); } catch (Exception ignored) {}
+            throw e;
         }
         return zip;
     }

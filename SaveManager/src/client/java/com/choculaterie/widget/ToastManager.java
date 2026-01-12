@@ -17,10 +17,14 @@ public class ToastManager {
     }
 
     public void showToast(String message, Toast.Type type) {
-        showToast(message, type, false, null);
+        showToast(message, type, false, null, null);
     }
 
     public void showToast(String message, Toast.Type type, boolean hasCopyButton, String copyText) {
+        showToast(message, type, hasCopyButton, copyText, null);
+    }
+
+    public void showToast(String message, Toast.Type type, boolean hasCopyButton, String copyText, String hintText) {
         if (client.getWindow() == null) return;
         int screenWidth = client.getWindow().getScaledWidth();
         int screenHeight = client.getWindow().getScaledHeight();
@@ -37,7 +41,7 @@ public class ToastManager {
                 }
             }
         }
-        toasts.add(new Toast(message, type, screenWidth, yPosition, hasCopyButton, copyText));
+        toasts.add(new Toast(message, type, screenWidth, yPosition, hasCopyButton, copyText, hintText));
     }
 
     public void showSuccess(String message) {
@@ -48,8 +52,12 @@ public class ToastManager {
         showToast(message, Toast.Type.ERROR);
     }
 
-    public void showError(String message, String fullErrorText) {
-        showToast(message, Toast.Type.ERROR, true, fullErrorText);
+    public void showError(String message, String hintText) {
+        showToast(message, Toast.Type.ERROR, false, null, hintText);
+    }
+
+    public void showError(String message, String fullErrorText, String hintText) {
+        showToast(message, Toast.Type.ERROR, true, fullErrorText, hintText);
     }
 
     public void showInfo(String message) {

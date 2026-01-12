@@ -17,13 +17,14 @@ public class Toast {
         }
     }
 
-    private static final int TOAST_WIDTH = 250;
+    private static final int TOAST_WIDTH = 300;
     private static final int TOAST_HEIGHT = 40;
     private static final int TOAST_HEIGHT_WITH_BUTTON = 60;
     private static final int PADDING = 10;
+    private static final int LINE_HEIGHT = 10;
     private static final long SLIDE_DURATION = 300;
     private static final long DISPLAY_DURATION = 3000;
-    private static final long ERROR_DISPLAY_DURATION = 8000;
+    private static final long ERROR_DISPLAY_DURATION = 15000;
     private static final long FADE_DURATION = 500;
 
     private final String message;
@@ -43,12 +44,19 @@ public class Toast {
     private long hoverStartTime = 0;
     private static double mouseX = 0;
     private static double mouseY = 0;
+    private java.util.List<String> wrappedLines = null;
+    private int calculatedHeight = TOAST_HEIGHT;
+    private String hintText = null;
 
     public Toast(String message, Type type, int screenWidth, int yPosition) {
-        this(message, type, screenWidth, yPosition, false, null);
+        this(message, type, screenWidth, yPosition, false, null, null);
     }
 
     public Toast(String message, Type type, int screenWidth, int yPosition, boolean hasCopyButton, String copyText) {
+        this(message, type, screenWidth, yPosition, hasCopyButton, copyText, null);
+    }
+
+    public Toast(String message, Type type, int screenWidth, int yPosition, boolean hasCopyButton, String copyText, String hintText) {
         this.message = message;
         this.type = type;
         this.screenWidth = screenWidth;
@@ -58,10 +66,36 @@ public class Toast {
         this.lastYPositionChange = createdTime;
         this.hasCopyButton = hasCopyButton;
         this.copyText = copyText != null ? copyText : message;
+        this.hintText = hintText;
         closeButton = new CustomButton(0, 0, 16, 16, Text.of("×"), btn -> {});
         if (hasCopyButton) {
             copyButton = new CustomButton(0, 0, 50, 18, Text.of("Copy"), btn -> {});
         }
+    }
+
+    private java.util.List<String> wrapText(net.minecraft.client.font.TextRenderer textRenderer, String text, int maxWidth) {
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        String[] words = text.split(" ");
+        StringBuilder currentLine = new StringBuilder();
+
+        for (String word : words) {
+            String testLine = currentLine.isEmpty() ? word : currentLine + " " + word;
+            if (textRenderer.getWidth(testLine) <= maxWidth) {
+                if (!currentLine.isEmpty()) {
+                    currentLine.append(" ");
+                }
+                currentLine.append(word);
+            } else {
+                if (!currentLine.isEmpty()) {
+                    lines.add(currentLine.toString());
+                }
+                currentLine = new StringBuilder(word);
+            }
+        }
+        if (!currentLine.isEmpty()) {
+            lines.add(currentLine.toString());
+        }
+        return lines;
     }
 
     public void setTargetYPosition(int targetY) {
@@ -109,7 +143,16 @@ public class Toast {
         int targetX = screenWidth - TOAST_WIDTH - PADDING;
         int startX = screenWidth + TOAST_WIDTH;
         int currentX = (int) (startX + (targetX - startX) * slideProgress);
-        int toastHeight = hasCopyButton ? TOAST_HEIGHT_WITH_BUTTON : TOAST_HEIGHT;
+
+        if (wrappedLines == null) {
+            int maxTextWidth = TOAST_WIDTH - 40;
+            wrappedLines = wrapText(textRenderer, message, maxTextWidth);
+            int baseHeight = hasCopyButton ? TOAST_HEIGHT_WITH_BUTTON : TOAST_HEIGHT;
+            int textHeight = Math.max(1, wrappedLines.size() - 1) * LINE_HEIGHT;
+            calculatedHeight = baseHeight + textHeight;
+        }
+
+        int toastHeight = calculatedHeight;
         int alpha = (int) (255 * fadeProgress);
         if (alpha <= 0) return true;
 
@@ -136,20 +179,11 @@ public class Toast {
 
         int textX = currentX + 28;
         int textY = yPosition + 8;
-        int maxTextWidth = TOAST_WIDTH - 40;
-
-        String displayText = message;
-        int textWidth = textRenderer.getWidth(displayText);
-        if (textWidth > maxTextWidth) {
-            while (textWidth > maxTextWidth - 10 && displayText.length() > 3) {
-                displayText = displayText.substring(0, displayText.length() - 1);
-                textWidth = textRenderer.getWidth(displayText + "...");
-            }
-            displayText += "...";
-        }
-
         int textColorWithAlpha = (alpha << 24) | 0x00FFFFFF;
-        context.drawText(textRenderer, displayText, textX, textY, textColorWithAlpha, false);
+
+        for (int i = 0; i < wrappedLines.size(); i++) {
+            context.drawText(textRenderer, wrappedLines.get(i), textX, textY + (i * LINE_HEIGHT), textColorWithAlpha, false);
+        }
 
         if (closeButton != null) {
             int closeButtonX = currentX + TOAST_WIDTH - 16 - 4;
@@ -169,6 +203,13 @@ public class Toast {
             copyButton.setWidth(50);
             copyButton.setHeight(18);
             copyButton.render(context, (int) mouseX, (int) mouseY, 0);
+        }
+
+        if (hintText != null && !hintText.isEmpty()) {
+            int hintX = currentX + 10;
+            int hintY = yPosition + toastHeight - 11;
+            int hintColorWithAlpha = (alpha << 24) | 0x00AAAAAA;
+            context.drawText(textRenderer, hintText, hintX, hintY, hintColorWithAlpha, false);
         }
 
         return false;
@@ -195,7 +236,7 @@ public class Toast {
         int targetX = screenWidth - TOAST_WIDTH - PADDING;
         int startX = screenWidth + TOAST_WIDTH;
         int currentX = (int) (startX + (targetX - startX) * slideProgress);
-        int toastHeight = hasCopyButton ? TOAST_HEIGHT_WITH_BUTTON : TOAST_HEIGHT;
+        int toastHeight = calculatedHeight;
         return mouseX >= currentX && mouseX < currentX + TOAST_WIDTH &&
                 mouseY >= yPosition && mouseY < yPosition + toastHeight;
     }
@@ -229,7 +270,7 @@ public class Toast {
     }
 
     public int getHeight() {
-        return (hasCopyButton ? TOAST_HEIGHT_WITH_BUTTON : TOAST_HEIGHT) + 5;
+        return calculatedHeight + 5;
     }
 
     public boolean isCopyButtonClicked(double mouseX, double mouseY) {
