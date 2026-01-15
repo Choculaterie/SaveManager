@@ -29,6 +29,7 @@ import java.util.function.BiConsumer;
 
 public class NetworkManager {
     private static final String BASE_URL = "https://choculaterie.com";
+    private static final String API_BASE_PATH = "/api/SaveManagerAPI";
     private static final String API_KEY_HEADER = "X-Save-Key";
 
     private static final HttpClient INSECURE_CLIENT;
@@ -73,13 +74,48 @@ public class NetworkManager {
     public String getApiKey() { return apiKey; }
 
     public String getApiTokenGenerationUrl() {
-        return BASE_URL + "/api/SaveManagerAPI/GenerateSaveToken";
+        return BASE_URL + API_BASE_PATH + "/GenerateSaveToken";
+    }
+
+    public CompletableFuture<JsonObject> initiateOAuthFlow(String clientName) {
+        String body = "\"" + (clientName != null ? clientName : "SaveManager Mod") + "\"";
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + API_BASE_PATH + "/flow/initiate"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(this::handleJsonResponse);
+    }
+
+    public CompletableFuture<JsonObject> getOAuthFlowStatus(String flowId) {
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + API_BASE_PATH + "/flow/status/" + flowId))
+                .GET()
+                .build();
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(this::handleJsonResponse);
+    }
+
+    public String getOAuthAuthorizeUrl(String flowId) {
+        return BASE_URL + API_BASE_PATH + "/flow/authorize/" + flowId;
+    }
+
+    public CompletableFuture<JsonObject> getQuotaInfo() {
+        validateApiKey();
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + API_BASE_PATH + "/quota-info"))
+                .header(API_KEY_HEADER, apiKey)
+                .GET()
+                .build();
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(this::handleJsonResponse);
     }
 
     public CompletableFuture<JsonObject> listWorldSaves() {
         validateApiKey();
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/list"))
+                .uri(URI.create(BASE_URL + API_BASE_PATH + "/list"))
                 .header(API_KEY_HEADER, apiKey)
                 .GET()
                 .build();
@@ -113,7 +149,7 @@ public class NetworkManager {
         return CompletableFuture.supplyAsync(() -> {
             HttpURLConnection conn = null;
             try {
-                URL url = new URL(uploadBase + "/api/SaveManagerAPI/upload");
+                URL url = new URL(uploadBase + API_BASE_PATH + "/upload");
                 conn = (HttpURLConnection) url.openConnection();
                 if (conn instanceof HttpsURLConnection https) {
                     try {
@@ -223,7 +259,7 @@ public class NetworkManager {
     public CompletableFuture<java.util.List<String>> listWorldSaveNames() {
         validateApiKey();
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/names"))
+                .uri(URI.create(BASE_URL + API_BASE_PATH + "/names"))
                 .header(API_KEY_HEADER, apiKey)
                 .GET()
                 .build();
@@ -250,7 +286,7 @@ public class NetworkManager {
     public CompletableFuture<Path> downloadWorldSave(String saveId, Path destinationDirectory, BiConsumer<Long, Long> progressCallback) {
         validateApiKey();
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/download/" + saveId))
+                .uri(URI.create(BASE_URL + API_BASE_PATH + "/download/" + saveId))
                 .header(API_KEY_HEADER, apiKey)
                 .header("Accept-Encoding", "identity")
                 .GET()
@@ -315,7 +351,7 @@ public class NetworkManager {
     public CompletableFuture<JsonObject> deleteWorldSave(String saveId) {
         validateApiKey();
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + "/api/SaveManagerAPI/delete/" + saveId))
+                .uri(URI.create(BASE_URL + API_BASE_PATH + "/delete/" + saveId))
                 .header(API_KEY_HEADER, apiKey)
                 .DELETE()
                 .build();

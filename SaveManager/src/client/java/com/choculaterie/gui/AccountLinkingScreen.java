@@ -1,9 +1,7 @@
 package com.choculaterie.gui;
 
-import com.choculaterie.SaveManagerMod;
 import com.choculaterie.network.NetworkManager;
 import com.choculaterie.widget.CustomButton;
-import com.choculaterie.widget.CustomTextField;
 import com.choculaterie.widget.ToastManager;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -11,7 +9,6 @@ import com.google.gson.JsonObject;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.world.SelectWorldScreen;
-import net.minecraft.text.OrderedText;
 import net.minecraft.text.Text;
 
 import javax.crypto.Cipher;
@@ -25,7 +22,10 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.function.BiFunction;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class AccountLinkingScreen extends Screen {
     private static final String CONFIG_FILE = "save-manager-settings.json";
@@ -48,14 +48,14 @@ public class AccountLinkingScreen extends Screen {
     private final NetworkManager networkManager;
     private final ToastManager toastManager;
 
-    private CustomTextField tokenField;
-    private CustomButton visibilityButton;
-    private CustomButton resetButton;
-    private CustomButton saveButton;
-    private CustomButton cancelButton;
+    private CustomButton linkResetButton;
 
-    private String realToken = "";
-    private boolean passwordVisible = false;
+    private String currentFlowId = null;
+    private String pendingLinkCode = null;
+    private String pendingSaveKey = null;
+    private boolean isLinking = false;
+    private String linkingStatus = "";
+    private ScheduledExecutorService pollExecutor = null;
 
     public AccountLinkingScreen(Screen parent) {
         super(Text.literal("Link Your Account"));
@@ -74,140 +74,271 @@ public class AccountLinkingScreen extends Screen {
             } catch (Exception ignored) {}
         }
 
+        int btnSize = 20;
+        int margin = 6;
+        CustomButton backButton = new CustomButton(margin, margin, btnSize, btnSize, Text.literal("←"), b -> goBack());
+        this.addDrawableChild(backButton);
+
         int cx = this.width / 2;
-        int fieldW = 200;
-        int eyeW = 25;
-        int resetW = 50;
-        int gap = 6;
-        int groupW = fieldW + gap + eyeW + gap + resetW;
-        int groupLeft = cx - (groupW / 2);
-        int fieldY = this.height / 2 - 10;
-        int actionY = fieldY + 30;
+        int btnW = 100;
+        int btnY = this.height / 2;
 
-        tokenField = new CustomTextField(client, groupLeft, fieldY, fieldW, 20, Text.literal("API Key"));
-        tokenField.setPlaceholder(Text.literal("Enter your API key..."));
-        tokenField.setOnChanged(() -> {
-            if (passwordVisible) {
-                realToken = tokenField.getText();
-                updateResetButton();
-            }
-        });
-        this.addSelectableChild(tokenField);
-        this.setInitialFocus(tokenField);
+        String apiKey = loadApiKeyFromDisk();
+        boolean hasKey = apiKey != null && !apiKey.isBlank();
 
-        visibilityButton = new CustomButton(groupLeft + fieldW + gap, fieldY, eyeW, 20,
-                Text.literal("👁"), b -> toggleVisibility());
-        this.addDrawableChild(visibilityButton);
+        linkResetButton = new CustomButton(cx - (btnW / 2), btnY, btnW, 20,
+                Text.literal(hasKey ? "Reset" : "Link Account"), b -> handleLinkOrReset(hasKey));
+        this.addDrawableChild(linkResetButton);
 
-        resetButton = new CustomButton(groupLeft + fieldW + gap + eyeW + gap, fieldY, resetW, 20,
-                Text.literal(realToken.isEmpty() ? "Link" : "Reset"), b -> handleResetOrLink());
-        this.addDrawableChild(resetButton);
-
-        int actionW = 95;
-        int actionGap = 10;
-        int actionsGroupW = actionW + actionGap + actionW;
-        int actionsLeft = cx - (actionsGroupW / 2);
-
-        saveButton = new CustomButton(actionsLeft, actionY, actionW, 20,
-                Text.literal("Save"), b -> saveApiKey());
-        this.addDrawableChild(saveButton);
-
-        cancelButton = new CustomButton(actionsLeft + actionW + actionGap, actionY, actionW, 20,
-                Text.literal("Cancel"), b -> closeScreen());
-        this.addDrawableChild(cancelButton);
-
-        loadSavedApiKey();
-        passwordVisible = realToken.isEmpty();
-        applyMasking();
-        updateResetButton();
-    }
-
-    private void toggleVisibility() {
-        passwordVisible = !passwordVisible;
-        applyMasking();
-    }
-
-    private void applyMasking() {
-        boolean visible = passwordVisible || realToken.isEmpty();
-        try {
-            BiFunction<String, Integer, OrderedText> provider = visible
-                    ? (text, idx) -> Text.literal(text.substring(Math.min(idx, text.length()))).asOrderedText()
-                    : (text, idx) -> Text.literal(mask(text.length()).substring(Math.min(idx, text.length()))).asOrderedText();
-            var m = net.minecraft.client.gui.widget.TextFieldWidget.class.getMethod("setRenderTextProvider", BiFunction.class);
-            m.invoke(tokenField, provider);
-            tokenField.setText(realToken);
-        } catch (Exception ignored) {
-            tokenField.setText(visible ? realToken : mask(realToken.length()));
+        if (hasKey) {
+            networkManager.setApiKey(apiKey);
         }
     }
 
-    private void updateResetButton() {
-        if (resetButton != null) {
-            resetButton.setMessage(Text.literal(realToken.isEmpty() ? "Link" : "Reset"));
+    private void goBack() {
+        if (client != null) {
+            client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
         }
     }
 
-    private void handleResetOrLink() {
-        if (!realToken.isEmpty()) {
-            realToken = "";
+    private void handleLinkOrReset(boolean hasKey) {
+        if (hasKey) {
             networkManager.setApiKey(null);
             clearConfigToken();
-            passwordVisible = true;
-            applyMasking();
-            updateResetButton();
-            toastManager.showInfo("API key cleared");
+            client.setScreen(new AccountLinkingScreen(parent));
+        } else {
+            startOAuthFlow();
         }
-        openApiKeyWebsite();
     }
 
-    private void loadSavedApiKey() {
-        try {
-            File configFile = new File(new File(client.runDirectory, "config"), CONFIG_FILE);
-            if (configFile.exists()) {
-                try (FileReader reader = new FileReader(configFile)) {
-                    JsonObject json = new Gson().fromJson(reader, JsonObject.class);
-                    if (json != null) {
-                        if (json.has("encryptedApiToken")) {
-                            realToken = decrypt(json.get("encryptedApiToken").getAsString());
-                            networkManager.setApiKey(realToken);
-                        } else if (json.has("apiToken")) {
-                            realToken = json.get("apiToken").getAsString();
-                            networkManager.setApiKey(realToken);
+    private void startOAuthFlow() {
+        if (isLinking) {
+            return;
+        }
+
+        isLinking = true;
+        linkingStatus = "Initiating...";
+
+        networkManager.initiateOAuthFlow("SaveManager Mod").whenComplete((json, err) -> {
+            if (err != null) {
+                runOnClient(() -> {
+                    isLinking = false;
+                    linkingStatus = "";
+                });
+                return;
+            }
+
+            try {
+                currentFlowId = json.has("flowId") ? json.get("flowId").getAsString() : null;
+                int expiresIn = json.has("expiresInSeconds") ? json.get("expiresInSeconds").getAsInt() : 300;
+
+                if (currentFlowId == null) {
+                    runOnClient(() -> {
+                        isLinking = false;
+                        linkingStatus = "";
+                    });
+                    return;
+                }
+
+                String authUrl = networkManager.getOAuthAuthorizeUrl(currentFlowId);
+
+                runOnClient(() -> {
+                    linkingStatus = "Waiting for approval...";
+                    try {
+                        net.minecraft.util.Util.getOperatingSystem().open(new java.net.URI(authUrl));
+                    } catch (Exception e) {
+                    }
+                });
+
+                startPolling(currentFlowId, expiresIn);
+
+            } catch (Exception e) {
+                runOnClient(() -> {
+                    isLinking = false;
+                    linkingStatus = "";
+                });
+            }
+        });
+    }
+
+    private void startPolling(String flowId, int timeoutSeconds) {
+        stopPolling();
+
+        pollExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "SaveManager-OAuth-Poll");
+            t.setDaemon(true);
+            return t;
+        });
+
+        final int[] attempts = {0};
+        final int maxAttempts = timeoutSeconds / 2;
+        final net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+
+        pollExecutor.scheduleAtFixedRate(() -> {
+            int currentAttempt = ++attempts[0];
+            if (currentAttempt >= maxAttempts) {
+                mc.execute(() -> {
+                    stopPolling();
+                    isLinking = false;
+                    linkingStatus = "";
+                });
+                return;
+            }
+
+            networkManager.getOAuthFlowStatus(flowId).whenComplete((json, err) -> {
+                if (err != null) {
+                    return;
+                }
+
+                try {
+                    String status = json.has("status") ? json.get("status").getAsString() : "pending";
+
+                    if ("expired".equals(status)) {
+                        mc.execute(() -> {
+                            stopPolling();
+                            isLinking = false;
+                            linkingStatus = "";
+                        });
+                        return;
+                    }
+
+                    if ("pending".equals(status)) {
+                        mc.execute(() -> linkingStatus = "Waiting for approval...");
+                        return;
+                    }
+
+                    if ("completed".equals(status)) {
+                        String saveKey = json.has("saveKey") ? json.get("saveKey").getAsString() : null;
+                        boolean isMinecraftLinked = json.has("isMinecraftLinked") && json.get("isMinecraftLinked").getAsBoolean();
+                        boolean minecraftLinkingComplete = json.has("minecraftLinkingComplete") && json.get("minecraftLinkingComplete").getAsBoolean();
+                        String linkCode = json.has("linkCode") && !json.get("linkCode").isJsonNull() ? json.get("linkCode").getAsString() : null;
+
+                        if (saveKey == null) {
+                            return;
+                        }
+
+                        pendingSaveKey = saveKey;
+
+                        if (isMinecraftLinked) {
+                            stopPolling();
+                            mc.execute(() -> completeLinking(saveKey));
+                            return;
+                        }
+
+                        if (minecraftLinkingComplete) {
+                            stopPolling();
+                            mc.execute(() -> {
+                                if (mc.getNetworkHandler() != null) {
+                                    mc.getNetworkHandler().getConnection().disconnect(Text.literal("Linking complete"));
+                                }
+                                CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS).execute(() -> {
+                                    mc.execute(() -> completeLinking(saveKey));
+                                });
+                            });
+                            return;
+                        }
+
+                        if (linkCode != null && !linkCode.equals(pendingLinkCode)) {
+                            pendingLinkCode = linkCode;
+                            mc.execute(() -> {
+                                linkingStatus = "Linking MC account...";
+                                autoJoinServerAndLink(linkCode, saveKey);
+                            });
                         }
                     }
+                } catch (Exception e) {
                 }
-            }
-        } catch (Exception e) {
-            String cleanError = extractErrorMessage(e);
-            SaveManagerMod.LOGGER.warn("ConfigManager: error loading API key - {}", cleanError);
-            toastManager.showError("Error loading saved API key");
+            });
+        }, 0, 2, TimeUnit.SECONDS);
+    }
+
+    private void stopPolling() {
+        if (pollExecutor != null && !pollExecutor.isShutdown()) {
+            pollExecutor.shutdownNow();
+            pollExecutor = null;
         }
     }
 
-    private void saveApiKey() {
-        String apiKey = passwordVisible ? tokenField.getText() : realToken;
+    private void autoJoinServerAndLink(String linkCode, String saveKey) {
+        linkingStatus = "Joining server...";
+
+        final net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+
         try {
-            if (apiKey == null || apiKey.isEmpty()) {
-                networkManager.setApiKey(null);
-                clearConfigToken();
-                toastManager.showInfo("API key cleared");
-            } else {
-                networkManager.setApiKey(apiKey);
-                File configDir = new File(client.runDirectory, "config");
-                if (!configDir.exists()) configDir.mkdirs();
-                File configFile = new File(configDir, CONFIG_FILE);
-                JsonObject json = new JsonObject();
-                json.addProperty("encryptedApiToken", encrypt(apiKey));
-                try (FileWriter writer = new FileWriter(configFile)) {
-                    new GsonBuilder().setPrettyPrinting().create().toJson(json, writer);
-                }
-                toastManager.showSuccess("API key saved");
-            }
-            closeScreen();
+            net.minecraft.client.network.ServerAddress serverAddress =
+                net.minecraft.client.network.ServerAddress.parse("mc.choculaterie.com");
+            net.minecraft.client.network.ServerInfo serverInfo =
+                new net.minecraft.client.network.ServerInfo("Choculaterie", "mc.choculaterie.com", net.minecraft.client.network.ServerInfo.ServerType.OTHER);
+
+            final String[] linkCodeRef = {linkCode};
+
+            net.minecraft.client.gui.screen.multiplayer.ConnectScreen.connect(
+                this,
+                mc,
+                serverAddress,
+                serverInfo,
+                false,
+                null
+            );
+
+            CompletableFuture.delayedExecutor(6, TimeUnit.SECONDS).execute(() -> {
+                mc.execute(() -> {
+                    if (mc.player != null && mc.player.networkHandler != null) {
+                        linkingStatus = "Sending link command...";
+                        mc.player.networkHandler.sendChatCommand("link " + linkCodeRef[0]);
+                    } else {
+                        CompletableFuture.delayedExecutor(3, TimeUnit.SECONDS).execute(() -> {
+                            mc.execute(() -> {
+                                if (mc.player != null && mc.player.networkHandler != null) {
+                                    linkingStatus = "Sending link command...";
+                                    mc.player.networkHandler.sendChatCommand("link " + linkCodeRef[0]);
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+
         } catch (Exception e) {
-            String cleanError = extractErrorMessage(e);
-            SaveManagerMod.LOGGER.warn("ConfigManager: error saving API key - {}", cleanError);
-            toastManager.showError("Error saving API key");
+            isLinking = false;
+            linkingStatus = "";
+        }
+    }
+
+    private void completeLinking(String saveKey) {
+        stopPolling();
+        isLinking = false;
+        linkingStatus = "";
+        pendingLinkCode = null;
+        pendingSaveKey = null;
+        currentFlowId = null;
+
+        networkManager.setApiKey(saveKey);
+
+        try {
+            net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+            File configDir = new File(mc.runDirectory, "config");
+            if (!configDir.exists()) configDir.mkdirs();
+            File configFile = new File(configDir, CONFIG_FILE);
+            JsonObject json = new JsonObject();
+            json.addProperty("encryptedApiToken", encrypt(saveKey));
+            try (FileWriter writer = new FileWriter(configFile)) {
+                new GsonBuilder().setPrettyPrinting().create().toJson(json, writer);
+            }
+        } catch (Exception e) {
+        }
+
+        net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+        mc.execute(() -> {
+            SaveManagerScreen screen = new SaveManagerScreen(null);
+            mc.setScreen(screen);
+            screen.refresh();
+        });
+    }
+
+    private void runOnClient(Runnable r) {
+        if (client != null) {
+            client.execute(r);
         }
     }
 
@@ -232,22 +363,11 @@ public class AccountLinkingScreen extends Screen {
                 }
             }
         } catch (Exception e) {
-            String cleanError = extractErrorMessage(e);
-            SaveManagerMod.LOGGER.warn("ConfigManager: error clearing config - {}", cleanError);
-        }
-    }
-
-    private void openApiKeyWebsite() {
-        try {
-            net.minecraft.util.Util.getOperatingSystem().open(networkManager.getApiTokenGenerationUrl());
-        } catch (Exception e) {
-            String cleanError = extractErrorMessage(e);
-            SaveManagerMod.LOGGER.warn("BrowserManager: failed to open API key website - {}", cleanError);
-            toastManager.showError("Could not open browser");
         }
     }
 
     private void closeScreen() {
+        stopPolling();
         if (client != null) {
             String apiKey = loadApiKeyFromDisk();
             if (apiKey != null && !apiKey.isBlank()) {
@@ -260,6 +380,21 @@ public class AccountLinkingScreen extends Screen {
                 client.setScreen(new SelectWorldScreen(resolveRootParent(parent instanceof SaveManagerScreen ? ((SaveManagerScreen) parent).getParent() : parent)));
             }
         }
+    }
+
+    @Override
+    public void removed() {
+        super.removed();
+    }
+
+    @Override
+    public boolean shouldCloseOnEsc() {
+        return true;
+    }
+
+    @Override
+    public void close() {
+        goBack();
     }
 
     private String loadApiKeyFromDisk() {
@@ -283,19 +418,17 @@ public class AccountLinkingScreen extends Screen {
         super.render(context, mouseX, mouseY, delta);
 
         int cx = this.width / 2;
-        int fieldY = this.height / 2 - 10;
 
         context.drawCenteredTextWithShadow(textRenderer, title, cx, 10, 0xFFFFFFFF);
-        context.drawCenteredTextWithShadow(textRenderer, Text.literal("Enter your API key to link your account"),
-                cx, fieldY - 14, 0xFFAAAAAA);
 
-        tokenField.render(context, mouseX, mouseY, delta);
+        if (isLinking && !linkingStatus.isEmpty()) {
+            context.drawCenteredTextWithShadow(textRenderer, Text.literal(linkingStatus),
+                    cx, this.height / 2 + 30, 0xFF88FF88);
+        }
+
         toastManager.render(context, delta, mouseX, mouseY);
     }
 
-    private static String mask(int len) {
-        return "*".repeat(Math.max(0, len));
-    }
 
     private static String extractErrorMessage(Throwable err) {
         if (err == null) return "Unknown error";
