@@ -813,7 +813,13 @@ public class SaveManagerScreen extends Screen {
         return formatBytes(used) + " of " + quotaFormatted + " (" + formatBytes(left) + " left)";
     }
     private void closeScreen() {
-        if (client != null) client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
+        if (client != null) {
+            if (parent instanceof SelectWorldScreen) {
+                client.setScreen(parent);
+            } else {
+                client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
+            }
+        }
     }
     private void runOnClient(Runnable r) {
         if (client != null) client.execute(r);

@@ -97,16 +97,22 @@ public class AccountLinkingScreen extends Screen {
 
     private void goBack() {
         if (client != null) {
-            Screen targetParent = parent;
+            String apiKey = loadApiKeyFromDisk();
             if (parent instanceof SaveManagerScreen) {
-                targetParent = ((SaveManagerScreen) parent).getParent();
-            }
-            if (targetParent instanceof SelectWorldScreen) {
-                SelectWorldScreen sws = (SelectWorldScreen) targetParent;
-                SelectWorldScreen fresh = new SelectWorldScreen(resolveRootParent(targetParent));
-                client.setScreen(fresh);
+                if (apiKey != null && !apiKey.isBlank()) {
+                    client.setScreen(parent);
+                } else {
+                    Screen grandParent = ((SaveManagerScreen) parent).getParent();
+                    if (grandParent instanceof SelectWorldScreen) {
+                        client.setScreen(grandParent);
+                    } else {
+                        client.setScreen(new SelectWorldScreen(resolveRootParent(grandParent)));
+                    }
+                }
+            } else if (parent instanceof SelectWorldScreen) {
+                client.setScreen(parent);
             } else {
-                client.setScreen(new SelectWorldScreen(resolveRootParent(targetParent)));
+                client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
             }
         }
     }
@@ -340,13 +346,15 @@ public class AccountLinkingScreen extends Screen {
 
         net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
         mc.execute(() -> {
-            Screen targetParent = parent;
             if (parent instanceof SaveManagerScreen) {
-                targetParent = ((SaveManagerScreen) parent).getParent();
-            }
-            if (targetParent instanceof SelectWorldScreen) {
-                mc.setScreen(targetParent);
+                SaveManagerScreen sms = (SaveManagerScreen) parent;
+                mc.setScreen(sms);
+                sms.refresh();
             } else {
+                Screen targetParent = parent;
+                if (parent instanceof SelectWorldScreen) {
+                    targetParent = parent;
+                }
                 SaveManagerScreen screen = new SaveManagerScreen(targetParent);
                 mc.setScreen(screen);
                 screen.refresh();
@@ -387,15 +395,22 @@ public class AccountLinkingScreen extends Screen {
     private void closeScreen() {
         stopPolling();
         if (client != null) {
-            Screen targetParent = parent;
+            String apiKey = loadApiKeyFromDisk();
             if (parent instanceof SaveManagerScreen) {
-                targetParent = ((SaveManagerScreen) parent).getParent();
-            }
-            if (targetParent instanceof SelectWorldScreen) {
-                SelectWorldScreen fresh = new SelectWorldScreen(resolveRootParent(targetParent));
-                client.setScreen(fresh);
+                if (apiKey != null && !apiKey.isBlank()) {
+                    client.setScreen(parent);
+                } else {
+                    Screen grandParent = ((SaveManagerScreen) parent).getParent();
+                    if (grandParent instanceof SelectWorldScreen) {
+                        client.setScreen(grandParent);
+                    } else {
+                        client.setScreen(new SelectWorldScreen(resolveRootParent(grandParent)));
+                    }
+                }
+            } else if (parent instanceof SelectWorldScreen) {
+                client.setScreen(parent);
             } else {
-                client.setScreen(new SelectWorldScreen(resolveRootParent(targetParent)));
+                client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
             }
         }
     }
