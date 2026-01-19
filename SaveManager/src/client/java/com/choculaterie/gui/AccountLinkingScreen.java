@@ -218,6 +218,18 @@ public class AccountLinkingScreen extends Screen {
                         return;
                     }
 
+                    if ("cancelled".equals(status)) {
+                        mc.execute(() -> {
+                            stopPolling();
+                            isLinking = false;
+                            linkingStatus = "§cCancelled";
+                        });
+                        CompletableFuture.delayedExecutor(3, TimeUnit.SECONDS).execute(() -> {
+                            mc.execute(() -> linkingStatus = "");
+                        });
+                        return;
+                    }
+
                     if ("pending".equals(status)) {
                         mc.execute(() -> linkingStatus = "Waiting for approval...");
                         return;
@@ -454,7 +466,7 @@ public class AccountLinkingScreen extends Screen {
 
         context.drawCenteredTextWithShadow(textRenderer, title, cx, 10, 0xFFFFFFFF);
 
-        if (isLinking && !linkingStatus.isEmpty()) {
+        if (!linkingStatus.isEmpty()) {
             context.drawCenteredTextWithShadow(textRenderer, Text.literal(linkingStatus),
                     cx, this.height / 2 + 30, 0xFF88FF88);
         }
