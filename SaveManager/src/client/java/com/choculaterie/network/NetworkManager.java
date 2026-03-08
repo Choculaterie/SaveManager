@@ -28,7 +28,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
 
 public class NetworkManager {
-    private static final String BASE_URL = "https://choculaterie.com";
+    private static final String BASE_URL = "https://api.choculaterie.com";
     private static final String API_BASE_PATH = "/api/SaveManagerAPI";
     private static final String API_KEY_HEADER = "X-Save-Key";
 
@@ -73,9 +73,6 @@ public class NetworkManager {
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
     public String getApiKey() { return apiKey; }
 
-    public String getApiTokenGenerationUrl() {
-        return BASE_URL + API_BASE_PATH + "/GenerateSaveToken";
-    }
 
     public CompletableFuture<JsonObject> initiateOAuthFlow(String clientName) {
         String body = "\"" + (clientName != null ? clientName : "SaveManager Mod") + "\"";
@@ -98,7 +95,16 @@ public class NetworkManager {
     }
 
     public String getOAuthAuthorizeUrl(String flowId) {
-        return BASE_URL + API_BASE_PATH + "/flow/authorize/" + flowId;
+        return "https://choculaterie.com/save-manager/authorize/" + flowId;
+    }
+
+    public CompletableFuture<JsonObject> cancelOAuthFlow(String flowId) {
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + API_BASE_PATH + "/flow/cancel/" + flowId))
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(this::handleJsonResponse);
     }
 
     public CompletableFuture<JsonObject> getQuotaInfo() {
