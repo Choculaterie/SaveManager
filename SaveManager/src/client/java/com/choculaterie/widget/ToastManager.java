@@ -108,13 +108,7 @@ public class ToastManager {
         return false;
     }
 
-    public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean consumed) {
-        if (consumed) {
-            return false;
-        }
-        double mouseX = click.x();
-        double mouseY = click.y();
-
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
         for (Toast toast : toasts) {
             if (toast.isCloseButtonClicked(mouseX, mouseY)) {
                 toast.dismiss();

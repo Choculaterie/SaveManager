@@ -32,7 +32,6 @@ public class CustomButton extends ButtonWidget {
         this.renderAsDownloadIcon = renderAsDownloadIcon;
     }
 
-    @Override
     protected void drawIcon(DrawContext context, int mouseX, int mouseY, float delta) {
         boolean isHovered = mouseX >= this.getX() && mouseY >= this.getY() &&
                 mouseX < this.getX() + this.getWidth() && mouseY < this.getY() + this.getHeight();

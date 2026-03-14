@@ -716,33 +716,20 @@ public class SaveManagerScreen extends Screen {
         }
     }
 
-    @Override
-    public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean consumed) {
-        double mouseX = click.x();
-        double mouseY = click.y();
-        int button = click.button();
-
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (confirmPopup != null) {
-            return confirmPopup.mouseClicked(click, consumed);
+            return confirmPopup.mouseClicked(mouseX, mouseY, button);
         }
-
-        if (toastManager.mouseClicked(click, consumed)) {
+        if (toastManager.mouseClicked(mouseX, mouseY, button)) {
             return true;
         }
-
         if (toastManager.isMouseOverToast(mouseX, mouseY)) {
             return true;
         }
-
-        if (consumed) {
-            return true;
-        }
-
         if (toastManager.isMouseOverToast(mouseX, mouseY)) {
             return true;
         }
-
-        if (super.mouseClicked(click, false)) {
+        if (super.mouseClicked(mouseX, mouseY, button)) {
             return true;
         }
 

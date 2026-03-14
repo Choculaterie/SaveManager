@@ -147,14 +147,7 @@ public class ConfirmPopup implements Drawable, Element {
         if (confirmButton != null) confirmButton.render(context, mouseX, mouseY, delta);
     }
 
-    public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean consumed) {
-        if (consumed) {
-            return false;
-        }
-        double mouseX = click.x();
-        double mouseY = click.y();
-        int button = click.button();
-
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (mouseX < x || mouseX > x + POPUP_WIDTH || mouseY < y || mouseY > y + popupHeight) {
             onCancel.run();
             return true;
