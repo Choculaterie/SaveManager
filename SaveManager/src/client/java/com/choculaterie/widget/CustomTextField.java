@@ -11,38 +11,29 @@ public class CustomTextField extends TextFieldWidget {
     private static final int FIELD_BORDER_COLOR = 0xFF555555;
     private static final int FIELD_BORDER_FOCUSED_COLOR = 0xFF888888;
     private static final int CLEAR_BUTTON_SIZE = 12;
-    private static final int CLEAR_BUTTON_COLOR = 0xFF888888;
-    private static final int CLEAR_BUTTON_HOVER_COLOR = 0xFFAAAAAA;
+    private static final long INITIAL_DELAY = 400;
+    private static final long REPEAT_DELAY = 50;
 
     private final MinecraftClient client;
     private Runnable onEnterPressed;
     private Runnable onChanged;
+    private Runnable onClearPressed;
     private boolean wasEnterDown = false;
     private boolean wasClearButtonMouseDown = false;
     private Text placeholderText;
-    private Runnable onClearPressed;
 
     private static CustomTextField activeField = null;
     private static boolean callbackInstalled = false;
     private static long installedWindowHandle = 0;
 
-    private boolean wasBackspacePressed = false;
-    private boolean wasDeletePressed = false;
-    private boolean wasLeftPressed = false;
-    private boolean wasRightPressed = false;
+    private final KeyRepeatTracker backspace = new KeyRepeatTracker();
+    private final KeyRepeatTracker delete = new KeyRepeatTracker();
+    private final KeyRepeatTracker left = new KeyRepeatTracker();
+    private final KeyRepeatTracker right = new KeyRepeatTracker();
     private boolean wasHomePressed = false;
     private boolean wasEndPressed = false;
     private boolean wasCtrlCPressed = false;
     private boolean wasCtrlVPressed = false;
-
-    private long backspaceHoldStart = 0;
-    private long deleteHoldStart = 0;
-    private long lastBackspaceRepeat = 0;
-    private long lastDeleteRepeat = 0;
-    private long leftHoldStart = 0;
-    private long rightHoldStart = 0;
-    private long lastLeftRepeat = 0;
-    private long lastRightRepeat = 0;
 
     public CustomTextField(MinecraftClient client, int x, int y, int width, int height, Text text) {
         super(client.textRenderer, x, y, width, height, text);
@@ -55,17 +46,9 @@ public class CustomTextField extends TextFieldWidget {
     @Override
     public void write(String text) {}
 
-    public void setOnEnterPressed(Runnable callback) {
-        this.onEnterPressed = callback;
-    }
-
-    public void setOnChanged(Runnable callback) {
-        this.onChanged = callback;
-    }
-
-    public void setOnClearPressed(Runnable callback) {
-        this.onClearPressed = callback;
-    }
+    public void setOnEnterPressed(Runnable callback) { this.onEnterPressed = callback; }
+    public void setOnChanged(Runnable callback) { this.onChanged = callback; }
+    public void setOnClearPressed(Runnable callback) { this.onClearPressed = callback; }
 
     @Override
     public void setFocused(boolean focused) {
@@ -79,27 +62,26 @@ public class CustomTextField extends TextFieldWidget {
     }
 
     private void installCharCallback() {
-        long windowHandle = client.getWindow() != null ? client.getWindow().getHandle() : 0;
-        if (windowHandle != 0 && (!callbackInstalled || installedWindowHandle != windowHandle)) {
-            GLFW.glfwSetCharCallback(windowHandle, (window, codepoint) -> {
+        long wh = getWindowHandle();
+        if (wh != 0 && (!callbackInstalled || installedWindowHandle != wh)) {
+            GLFW.glfwSetCharCallback(wh, (window, codepoint) -> {
                 if (activeField != null && activeField.isFocused()) {
                     activeField.onCharTyped((char) codepoint);
                 }
             });
             callbackInstalled = true;
-            installedWindowHandle = windowHandle;
+            installedWindowHandle = wh;
         }
     }
 
     private void onCharTyped(char c) {
         if (c == '\r' || c == '\n' || c < 32) return;
-        String currentText = this.getText();
-        int cursorPos = this.getCursor();
-        if (currentText.length() < 256) {
-            String newText = currentText.substring(0, cursorPos) + c + currentText.substring(cursorPos);
-            this.setText(newText);
-            this.setCursor(cursorPos + 1, false);
-            if (onChanged != null) onChanged.run();
+        String text = this.getText();
+        int cursor = this.getCursor();
+        if (text.length() < 256) {
+            this.setText(text.substring(0, cursor) + c + text.substring(cursor));
+            this.setCursor(cursor + 1, false);
+            fireChanged();
         }
     }
 
@@ -119,40 +101,51 @@ public class CustomTextField extends TextFieldWidget {
 
     @Override
     public void renderWidget(DrawContext context, int mouseX, int mouseY, float delta) {
-        long windowHandle = client.getWindow() != null ? client.getWindow().getHandle() : 0;
+        long wh = getWindowHandle();
 
-        if (windowHandle != 0) {
-            boolean isMouseDown = GLFW.glfwGetMouseButton(windowHandle, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
-            if (!this.getText().isEmpty() && isMouseDown && !wasClearButtonMouseDown && isOverClearButton(mouseX, mouseY)) {
-                this.setText("");
-                if (onChanged != null) onChanged.run();
-                if (onClearPressed != null) onClearPressed.run();
-            }
-            wasClearButtonMouseDown = isMouseDown;
-
-            boolean isEnterDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_ENTER) == GLFW.GLFW_PRESS ||
-                    GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_KP_ENTER) == GLFW.GLFW_PRESS;
-            if (this.isFocused() && onEnterPressed != null && isEnterDown && !wasEnterDown) {
-                wasEnterDown = true;
-                onEnterPressed.run();
-            } else if (!isEnterDown) {
-                wasEnterDown = false;
-            }
+        if (wh != 0) {
+            handleClearButton(wh, mouseX, mouseY);
+            handleEnterKey(wh);
         } else {
             wasClearButtonMouseDown = false;
         }
 
-        if (windowHandle != 0 && this.isFocused()) {
-            handleSpecialKeys(windowHandle);
+        if (wh != 0 && this.isFocused()) handleSpecialKeys(wh);
+
+        renderBackground(context);
+        renderText(context, mouseX, mouseY);
+    }
+
+    private void handleClearButton(long wh, int mouseX, int mouseY) {
+        boolean isMouseDown = GLFW.glfwGetMouseButton(wh, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+        if (!this.getText().isEmpty() && isMouseDown && !wasClearButtonMouseDown && isOverClearButton(mouseX, mouseY)) {
+            this.setText("");
+            fireChanged();
+            if (onClearPressed != null) onClearPressed.run();
         }
+        wasClearButtonMouseDown = isMouseDown;
+    }
 
-        context.fill(this.getX(), this.getY(), this.getX() + this.getWidth(), this.getY() + this.getHeight(), FIELD_BG_COLOR);
-        int borderColor = this.isFocused() ? FIELD_BORDER_FOCUSED_COLOR : FIELD_BORDER_COLOR;
-        context.fill(this.getX(), this.getY(), this.getX() + this.getWidth(), this.getY() + 1, borderColor);
-        context.fill(this.getX(), this.getY() + this.getHeight() - 1, this.getX() + this.getWidth(), this.getY() + this.getHeight(), borderColor);
-        context.fill(this.getX(), this.getY(), this.getX() + 1, this.getY() + this.getHeight(), borderColor);
-        context.fill(this.getX() + this.getWidth() - 1, this.getY(), this.getX() + this.getWidth(), this.getY() + this.getHeight(), borderColor);
+    private void handleEnterKey(long wh) {
+        boolean isEnterDown = GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_ENTER) == GLFW.GLFW_PRESS ||
+                GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_KP_ENTER) == GLFW.GLFW_PRESS;
+        if (this.isFocused() && onEnterPressed != null && isEnterDown && !wasEnterDown) {
+            onEnterPressed.run();
+        }
+        wasEnterDown = isEnterDown;
+    }
 
+    private void renderBackground(DrawContext context) {
+        int x = this.getX(), y = this.getY(), w = this.getWidth(), h = this.getHeight();
+        context.fill(x, y, x + w, y + h, FIELD_BG_COLOR);
+        int bc = this.isFocused() ? FIELD_BORDER_FOCUSED_COLOR : FIELD_BORDER_COLOR;
+        context.fill(x, y, x + w, y + 1, bc);
+        context.fill(x, y + h - 1, x + w, y + h, bc);
+        context.fill(x, y, x + 1, y + h, bc);
+        context.fill(x + w - 1, y, x + w, y + h, bc);
+    }
+
+    private void renderText(DrawContext context, int mouseX, int mouseY) {
         int textY = this.getY() + (this.getHeight() - 8) / 2;
         int textX = this.getX() + 4;
         int maxTextWidth = this.getWidth() - 8 - (this.getText().isEmpty() ? 0 : CLEAR_BUTTON_SIZE + 4);
@@ -164,147 +157,125 @@ public class CustomTextField extends TextFieldWidget {
             }
         } else {
             int color = this.isFocused() ? 0xFFFFFFFF : 0xFFE0E0E0;
-            int cursorPos = this.getCursor();
-            String beforeCursor = text.substring(0, Math.min(cursorPos, text.length()));
+            int cursor = this.getCursor();
             context.enableScissor(textX, this.getY(), textX + maxTextWidth, this.getY() + this.getHeight());
             context.drawTextWithShadow(client.textRenderer, text, textX, textY, color);
             context.disableScissor();
             if (this.isFocused() && this.isActive() && (System.currentTimeMillis() / 500) % 2 == 0) {
-                int cursorX = textX + client.textRenderer.getWidth(beforeCursor);
+                int cursorX = textX + client.textRenderer.getWidth(text.substring(0, Math.min(cursor, text.length())));
                 context.fill(cursorX, textY - 1, cursorX + 1, textY + 9, 0xFFFFFFFF);
             }
         }
 
-        if (!this.getText().isEmpty()) {
+        if (!text.isEmpty()) {
             int clearX = this.getX() + this.getWidth() - CLEAR_BUTTON_SIZE - 4;
             int clearY = this.getY() + (this.getHeight() - CLEAR_BUTTON_SIZE) / 2 + 1;
             boolean isHovered = isOverClearButton(mouseX, mouseY);
-            int clearColor = isHovered ? CLEAR_BUTTON_HOVER_COLOR : CLEAR_BUTTON_COLOR;
-            String xSymbol = "✕";
+            String xSymbol = "\u2715";
             int xWidth = client.textRenderer.getWidth(xSymbol);
-            int xX = clearX + (CLEAR_BUTTON_SIZE - xWidth) / 2;
-            int xY = clearY + (CLEAR_BUTTON_SIZE - 8) / 2;
-            context.drawTextWithShadow(client.textRenderer, xSymbol, xX, xY, clearColor);
+            context.drawTextWithShadow(client.textRenderer, xSymbol,
+                    clearX + (CLEAR_BUTTON_SIZE - xWidth) / 2,
+                    clearY + (CLEAR_BUTTON_SIZE - 8) / 2,
+                    isHovered ? 0xFFAAAAAA : 0xFF888888);
         }
     }
 
-    private void handleSpecialKeys(long windowHandle) {
-        long currentTime = System.currentTimeMillis();
-        long initialDelay = 400;
-        long repeatDelay = 50;
-        String currentText = this.getText();
-        int cursorPos = this.getCursor();
+    private void handleSpecialKeys(long wh) {
+        long now = System.currentTimeMillis();
+        String text = this.getText();
+        int cursor = this.getCursor();
 
-        boolean isBackspaceDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_BACKSPACE) == GLFW.GLFW_PRESS;
-        if (isBackspaceDown) {
-            boolean shouldDelete = false;
-            if (!wasBackspacePressed) {
-                shouldDelete = true;
-                backspaceHoldStart = currentTime;
-                lastBackspaceRepeat = currentTime;
-            } else if (currentTime - backspaceHoldStart > initialDelay && currentTime - lastBackspaceRepeat > repeatDelay) {
-                shouldDelete = true;
-                lastBackspaceRepeat = currentTime;
-            }
-            if (shouldDelete && cursorPos > 0) {
-                String newText = currentText.substring(0, cursorPos - 1) + currentText.substring(cursorPos);
-                this.setText(newText);
-                this.setCursor(cursorPos - 1, false);
-                currentText = newText;
-                cursorPos = cursorPos - 1;
-                if (onChanged != null) onChanged.run();
+        if (backspace.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_BACKSPACE) == GLFW.GLFW_PRESS, now, INITIAL_DELAY, REPEAT_DELAY)) {
+            if (cursor > 0) {
+                this.setText(text.substring(0, cursor - 1) + text.substring(cursor));
+                this.setCursor(cursor - 1, false);
+                text = this.getText();
+                cursor = this.getCursor();
+                fireChanged();
             }
         }
-        wasBackspacePressed = isBackspaceDown;
 
-        boolean isDeleteDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_DELETE) == GLFW.GLFW_PRESS;
-        if (isDeleteDown) {
-            boolean shouldDelete = false;
-            if (!wasDeletePressed) {
-                shouldDelete = true;
-                deleteHoldStart = currentTime;
-                lastDeleteRepeat = currentTime;
-            } else if (currentTime - deleteHoldStart > initialDelay && currentTime - lastDeleteRepeat > repeatDelay) {
-                shouldDelete = true;
-                lastDeleteRepeat = currentTime;
-            }
-            if (shouldDelete && cursorPos < currentText.length()) {
-                String newText = currentText.substring(0, cursorPos) + currentText.substring(cursorPos + 1);
-                this.setText(newText);
-                currentText = newText;
-                if (onChanged != null) onChanged.run();
+        if (delete.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_DELETE) == GLFW.GLFW_PRESS, now, INITIAL_DELAY, REPEAT_DELAY)) {
+            if (cursor < text.length()) {
+                this.setText(text.substring(0, cursor) + text.substring(cursor + 1));
+                text = this.getText();
+                fireChanged();
             }
         }
-        wasDeletePressed = isDeleteDown;
 
-        boolean isLeftDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS;
-        if (isLeftDown) {
-            boolean shouldMove = false;
-            if (!wasLeftPressed) {
-                shouldMove = true;
-                leftHoldStart = currentTime;
-                lastLeftRepeat = currentTime;
-            } else if (currentTime - leftHoldStart > initialDelay && currentTime - lastLeftRepeat > repeatDelay) {
-                shouldMove = true;
-                lastLeftRepeat = currentTime;
-            }
-            if (shouldMove && cursorPos > 0) this.setCursor(cursorPos - 1, false);
+        if (left.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS, now, INITIAL_DELAY, REPEAT_DELAY)) {
+            if (cursor > 0) this.setCursor(cursor - 1, false);
         }
-        wasLeftPressed = isLeftDown;
 
-        boolean isRightDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS;
-        if (isRightDown) {
-            boolean shouldMove = false;
-            if (!wasRightPressed) {
-                shouldMove = true;
-                rightHoldStart = currentTime;
-                lastRightRepeat = currentTime;
-            } else if (currentTime - rightHoldStart > initialDelay && currentTime - lastRightRepeat > repeatDelay) {
-                shouldMove = true;
-                lastRightRepeat = currentTime;
-            }
-            if (shouldMove && cursorPos < currentText.length()) this.setCursor(cursorPos + 1, false);
+        if (right.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS, now, INITIAL_DELAY, REPEAT_DELAY)) {
+            if (cursor < text.length()) this.setCursor(cursor + 1, false);
         }
-        wasRightPressed = isRightDown;
 
-        boolean isHomeDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_HOME) == GLFW.GLFW_PRESS;
+        boolean isHomeDown = GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_HOME) == GLFW.GLFW_PRESS;
         if (isHomeDown && !wasHomePressed) this.setCursor(0, false);
         wasHomePressed = isHomeDown;
 
-        boolean isEndDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_END) == GLFW.GLFW_PRESS;
-        if (isEndDown && !wasEndPressed) this.setCursor(currentText.length(), false);
+        boolean isEndDown = GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_END) == GLFW.GLFW_PRESS;
+        if (isEndDown && !wasEndPressed) this.setCursor(text.length(), false);
         wasEndPressed = isEndDown;
 
-        boolean isEscapeDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS;
-        if (isEscapeDown) this.setFocused(false);
+        if (GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS) this.setFocused(false);
 
-        boolean isCtrlDown = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
-                GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
+        boolean isCtrlDown = GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
+                GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
 
-        boolean isCtrlCDown = isCtrlDown && GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_C) == GLFW.GLFW_PRESS;
-        if (isCtrlCDown && !wasCtrlCPressed) {
-            String textToCopy = this.getText();
-            if (!textToCopy.isEmpty()) {
-                GLFW.glfwSetClipboardString(windowHandle, textToCopy);
-            }
+        boolean isCtrlCDown = isCtrlDown && GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_C) == GLFW.GLFW_PRESS;
+        if (isCtrlCDown && !wasCtrlCPressed && !text.isEmpty()) {
+            GLFW.glfwSetClipboardString(wh, text);
         }
         wasCtrlCPressed = isCtrlCDown;
 
-        boolean isCtrlVDown = isCtrlDown && GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_V) == GLFW.GLFW_PRESS;
+        boolean isCtrlVDown = isCtrlDown && GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_V) == GLFW.GLFW_PRESS;
         if (isCtrlVDown && !wasCtrlVPressed) {
-            String clipboardText = GLFW.glfwGetClipboardString(windowHandle);
-            if (clipboardText != null && !clipboardText.isEmpty()) {
-                String sanitized = clipboardText.replaceAll("[\\r\\n]+", "");
+            String clip = GLFW.glfwGetClipboardString(wh);
+            if (clip != null && !clip.isEmpty()) {
+                String sanitized = clip.replaceAll("[\\r\\n]+", "");
                 if (!sanitized.isEmpty()) {
-                    String newText = currentText.substring(0, cursorPos) + sanitized + currentText.substring(cursorPos);
+                    String newText = text.substring(0, cursor) + sanitized + text.substring(cursor);
                     if (newText.length() <= 256) {
                         this.setText(newText);
-                        this.setCursor(cursorPos + sanitized.length(), false);
-                        if (onChanged != null) onChanged.run();
+                        this.setCursor(cursor + sanitized.length(), false);
+                        fireChanged();
                     }
                 }
             }
         }
         wasCtrlVPressed = isCtrlVDown;
+    }
+
+    private void fireChanged() {
+        if (onChanged != null) onChanged.run();
+    }
+
+    private long getWindowHandle() {
+        return client.getWindow() != null ? client.getWindow().getHandle() : 0;
+    }
+
+    private static class KeyRepeatTracker {
+        private boolean wasDown;
+        private long holdStart;
+        private long lastRepeat;
+
+        boolean shouldFire(boolean isDown, long now, long initialDelay, long repeatDelay) {
+            if (isDown) {
+                if (!wasDown) {
+                    wasDown = true;
+                    holdStart = now;
+                    lastRepeat = now;
+                    return true;
+                } else if (now - holdStart > initialDelay && now - lastRepeat > repeatDelay) {
+                    lastRepeat = now;
+                    return true;
+                }
+            } else {
+                wasDown = false;
+            }
+            return false;
+        }
     }
 }

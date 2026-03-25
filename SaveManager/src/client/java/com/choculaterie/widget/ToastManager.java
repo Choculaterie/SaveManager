@@ -9,10 +9,14 @@ import java.util.List;
 
 public class ToastManager {
     private final List<Toast> toasts = new ArrayList<>();
-    private final MinecraftClient client;
+    private MinecraftClient client;
     private static final int TOP_PADDING = 10;
 
     public ToastManager(MinecraftClient client) {
+        this.client = client;
+    }
+
+    public void initClient(MinecraftClient client) {
         this.client = client;
     }
 

@@ -8,7 +8,6 @@ import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
 
-import java.util.ArrayList;
 import java.util.List;
 
 public class ConfirmPopup implements Drawable, Element {
@@ -74,29 +73,7 @@ public class ConfirmPopup implements Drawable, Element {
     }
 
     private List<String> wrapText(String text, int maxWidth, MinecraftClient client) {
-        List<String> lines = new ArrayList<>();
-        String[] paragraphs = text.split("\n");
-        for (String paragraph : paragraphs) {
-            if (paragraph.isEmpty()) {
-                lines.add("");
-                continue;
-            }
-            String[] words = paragraph.split(" ");
-            StringBuilder currentLine = new StringBuilder();
-            for (String word : words) {
-                String testLine = currentLine.length() == 0 ? word : currentLine + " " + word;
-                int width = client.textRenderer.getWidth(testLine);
-                if (width <= maxWidth) {
-                    if (currentLine.length() > 0) currentLine.append(" ");
-                    currentLine.append(word);
-                } else {
-                    if (currentLine.length() > 0) lines.add(currentLine.toString());
-                    currentLine = new StringBuilder(word);
-                }
-            }
-            if (currentLine.length() > 0) lines.add(currentLine.toString());
-        }
-        return lines.isEmpty() ? List.of(text) : lines;
+        return com.choculaterie.util.FormatUtils.wrapText(client.textRenderer, text, maxWidth);
     }
 
     @Override

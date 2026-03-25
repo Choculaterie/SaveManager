@@ -1,39 +1,35 @@
 package com.choculaterie.gui;
+
 import com.choculaterie.SaveManagerMod;
 import com.choculaterie.network.NetworkManager;
+import com.choculaterie.util.ConfigManager;
+import com.choculaterie.util.ScreenUtils;
 import com.choculaterie.widget.ConfirmPopup;
 import com.choculaterie.widget.CustomButton;
 import com.choculaterie.widget.LoadingSpinner;
 import com.choculaterie.widget.ScrollBar;
 import com.choculaterie.widget.ToastManager;
-import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.world.SelectWorldScreen;
 import net.minecraft.text.Text;
-import java.io.File;
-import java.io.FileReader;
-import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
+
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.security.MessageDigest;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
+import static com.choculaterie.util.FormatUtils.*;
+
 public class SaveManagerScreen extends Screen {
     private static final int ROW_HEIGHT = 24;
     private static final int VISIBLE_ROWS = 8;
     private static final int PANEL_GAP = 20;
-    private static final long RELOAD_THRESHOLD_MS = 15 * 60 * 1000L; // 15 minutes
+    private static final long RELOAD_THRESHOLD_MS = 15 * 60 * 1000L;
 
     private static long lastLoadTimeMs = 0L;
     private static final List<LocalSave> cachedLocalSaves = new ArrayList<>();
@@ -46,66 +42,75 @@ public class SaveManagerScreen extends Screen {
     private final LoadingSpinner spinner;
     private final List<LocalSave> localSaves = new ArrayList<>();
     private final List<CloudSave> cloudSaves = new ArrayList<>();
-    private ScrollBar localScrollBar;
-    private ScrollBar cloudScrollBar;
-    private int localScrollOffset = 0;
-    private int cloudScrollOffset = 0;
-    private int localSelectedIndex = -1;
-    private int cloudSelectedIndex = -1;
-    private boolean localLoading = true;
-    private boolean cloudLoading = true;
+    private ScrollBar localScrollBar, cloudScrollBar;
+    private int localScrollOffset = 0, cloudScrollOffset = 0;
+    private int localSelectedIndex = -1, cloudSelectedIndex = -1;
+    private boolean localLoading = true, cloudLoading = true;
     private int localPanelX, localPanelW, cloudPanelX, cloudPanelW, listY, listH;
     private ConfirmPopup confirmPopup = null;
-    private final List<CustomButton> allButtons = new ArrayList<>();
     private CustomButton uploadBtn, downloadBtn, deleteBtn, refreshBtn;
     private String quotaFormatted = "Loading";
     private long quotaBytes = 5L * 1024L * 1024L * 1024L;
     private boolean quotaLoading = false;
-    private static final ActiveOp ACTIVE = new ActiveOp();
-    private static final class ActiveOp {
-        volatile boolean dlActive = false;
-        volatile boolean upActive = false;
-        volatile boolean zipping = false;
-        volatile boolean unzipping = false;
-        volatile long bytes = 0L;
-        volatile long total = -1L;
-        volatile long lastBytes = 0L;
-        volatile long lastTickNanos = 0L;
-        volatile double speedBps = 0.0;
+    private static final TransferState ACTIVE = new TransferState();
+
+    private static final class TransferState {
+        volatile boolean dlActive, upActive, zipping, unzipping;
+        volatile long bytes, total = -1L, lastBytes, lastTickNanos;
+        volatile double speedBps;
+
+        boolean isActive() { return dlActive || upActive || zipping || unzipping; }
+
+        void reset(boolean download) {
+            if (download) { dlActive = true; unzipping = false; }
+            else { upActive = true; zipping = true; }
+            bytes = 0L; total = -1L; lastBytes = 0L;
+            lastTickNanos = System.nanoTime(); speedBps = 0.0;
+        }
+
+        void updateSpeed() {
+            long now = System.nanoTime();
+            long dtNs = now - lastTickNanos;
+            long dBytes = bytes - lastBytes;
+            if (dtNs > 50_000_000L) {
+                double instBps = dBytes > 0 ? (dBytes * 1_000_000_000.0) / dtNs : 0.0;
+                speedBps = speedBps <= 0 ? instBps : (0.2 * instBps + 0.8 * speedBps);
+                lastTickNanos = now;
+                lastBytes = bytes;
+            }
+        }
     }
+
     public SaveManagerScreen(Screen parent) {
         super(Text.literal("Save Manager"));
         this.parent = parent;
         this.toastManager = new ToastManager(null);
         this.spinner = new LoadingSpinner(0, 0);
     }
+
     @Override
     protected void init() {
-        initToastManager();
-        int cx = this.width / 2;
-        int btnSize = 20;
-        int margin = 6;
-        addCustomButton(margin, margin, btnSize, btnSize, Text.literal("←"), b -> closeScreen());
-        addCustomButton(margin + btnSize + 5, margin, btnSize, btnSize, Text.literal("🔄"), b -> refresh(), btn -> refreshBtn = btn);
-        addCustomButton(this.width - margin - btnSize * 2 - 5, margin, btnSize, btnSize, Text.literal("📁"), b -> openSavesFolder());
-        addCustomButton(this.width - margin - btnSize, margin, btnSize, btnSize, Text.literal("⚙"),
-                b -> client.setScreen(new AccountLinkingScreen(this)));
+        toastManager.initClient(client);
+        int btnSize = 20, margin = 6;
+        addBtn(margin, margin, btnSize, btnSize, "\u2190", b -> closeScreen());
+        refreshBtn = addBtn(margin + btnSize + 5, margin, btnSize, btnSize, "\uD83D\uDD04", b -> refresh());
+        addBtn(this.width - margin - btnSize * 2 - 5, margin, btnSize, btnSize, "\uD83D\uDCC1", b -> openSavesFolder());
+        addBtn(this.width - margin - btnSize, margin, btnSize, btnSize, "\u2699", b -> client.setScreen(new AccountLinkingScreen(this)));
+
         int totalW = this.width - 60;
         int panelW = (totalW - PANEL_GAP) / 2;
-        localPanelX = 30;
-        localPanelW = panelW;
-        cloudPanelX = localPanelX + panelW + PANEL_GAP;
-        cloudPanelW = panelW;
-        listY = 70;
-        listH = VISIBLE_ROWS * ROW_HEIGHT;
+        localPanelX = 30; localPanelW = panelW;
+        cloudPanelX = localPanelX + panelW + PANEL_GAP; cloudPanelW = panelW;
+        listY = 70; listH = VISIBLE_ROWS * ROW_HEIGHT;
         localScrollBar = new ScrollBar(localPanelX + localPanelW + 4, listY, listH);
         cloudScrollBar = new ScrollBar(cloudPanelX + cloudPanelW + 4, listY, listH);
-        int bottomY = this.height - 28;
-        int btnW = 80;
-        addCustomButton(localPanelX + (localPanelW - btnW) / 2, bottomY, btnW, 20, Text.literal("Upload"), b -> onUpload(), btn -> uploadBtn = btn);
-        addCustomButton(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2, bottomY, btnW, 20, Text.literal("Download"), b -> onDownload(), btn -> downloadBtn = btn);
-        addCustomButton(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2 + btnW + 10, bottomY, btnW, 20, Text.literal("Delete"), b -> onDelete(), btn -> deleteBtn = btn);
-        String apiKey = loadApiKeyFromDisk();
+
+        int bottomY = this.height - 28, btnW = 80;
+        uploadBtn = addBtn(localPanelX + (localPanelW - btnW) / 2, bottomY, btnW, 20, "Upload", b -> onUpload());
+        downloadBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2, bottomY, btnW, 20, "Download", b -> onDownload());
+        deleteBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2 + btnW + 10, bottomY, btnW, 20, "Delete", b -> onDelete());
+
+        String apiKey = ConfigManager.loadApiKey();
         if (apiKey == null || apiKey.isBlank()) {
             client.setScreen(new AccountLinkingScreen(this));
             return;
@@ -113,67 +118,35 @@ public class SaveManagerScreen extends Screen {
         networkManager.setApiKey(apiKey);
         quotaFormatted = cachedQuotaFormatted;
         quotaBytes = parseQuotaBytes(cachedQuotaFormatted);
-        long now = System.currentTimeMillis();
-        boolean shouldReload = (now - lastLoadTimeMs) > RELOAD_THRESHOLD_MS || cachedLocalSaves.isEmpty();
+
+        boolean shouldReload = (System.currentTimeMillis() - lastLoadTimeMs) > RELOAD_THRESHOLD_MS || cachedLocalSaves.isEmpty();
         if (shouldReload) {
             quotaLoading = true;
-            fetchLocalSaves();
-            fetchCloudSaves();
-            fetchQuotaInfo();
+            fetchLocalSaves(); fetchCloudSaves(); fetchQuotaInfo();
         } else {
             quotaLoading = false;
-            localSaves.clear();
             localSaves.addAll(cachedLocalSaves);
-            cloudSaves.clear();
             cloudSaves.addAll(cachedCloudSaves);
-            localLoading = false;
-            cloudLoading = false;
+            localLoading = false; cloudLoading = false;
         }
     }
 
-    private void addCustomButton(int x, int y, int width, int height, Text message, CustomButton.PressAction onPress) {
-        CustomButton button = new CustomButton(x, y, width, height, message, onPress);
-        button.setToastManager(toastManager);
-        allButtons.add(button);
-        addDrawableChild(button);
+    private CustomButton addBtn(int x, int y, int w, int h, String label, CustomButton.PressAction onPress) {
+        CustomButton btn = new CustomButton(x, y, w, h, Text.literal(label), onPress);
+        btn.setToastManager(toastManager);
+        addDrawableChild(btn);
+        return btn;
     }
 
-    private void addCustomButton(int x, int y, int width, int height, Text message, CustomButton.PressAction onPress, java.util.function.Consumer<CustomButton> store) {
-        CustomButton button = new CustomButton(x, y, width, height, message, onPress);
-        button.setToastManager(toastManager);
-        allButtons.add(button);
-        store.accept(button);
-        addDrawableChild(button);
-    }
-
-    private void initToastManager() {
-        try {
-            var f = ToastManager.class.getDeclaredField("client");
-            f.setAccessible(true);
-            f.set(toastManager, client);
-        } catch (Exception ignored) {}
-    }
     public void refresh() {
-        localSelectedIndex = -1;
-        cloudSelectedIndex = -1;
-        localScrollOffset = 0;
-        cloudScrollOffset = 0;
-        fetchLocalSaves();
-        fetchCloudSaves();
-        fetchQuotaInfo();
+        localSelectedIndex = -1; cloudSelectedIndex = -1;
+        localScrollOffset = 0; cloudScrollOffset = 0;
+        fetchLocalSaves(); fetchCloudSaves(); fetchQuotaInfo();
     }
 
-    private void openSavesFolder() {
-        try {
-            Path savesDir = client.runDirectory.toPath().resolve("saves");
-            Files.createDirectories(savesDir);
-            net.minecraft.util.Util.getOperatingSystem().open(savesDir.toFile());
-        } catch (Exception e) {
-            String cleanError = extractErrorMessage(e);
-            SaveManagerMod.LOGGER.warn("LocalSaveManager: failed to open saves folder - {}", cleanError);
-            toastManager.showError("Failed to open saves folder");
-        }
-    }
+    public Screen getParent() { return parent; }
+
+    // ── Data fetching ──
 
     private void fetchLocalSaves() {
         localLoading = true;
@@ -190,50 +163,38 @@ public class SaveManagerScreen extends Screen {
                 }
                 tmp.sort(Comparator.comparingLong((LocalSave s) -> s.lastModified).reversed());
             } catch (Exception e) {
-                String cleanError = extractErrorMessage(e);
-                SaveManagerMod.LOGGER.warn("LocalSaveManager: error scanning saves - {}", cleanError);
+                SaveManagerMod.LOGGER.warn("LocalSaves: scan error - {}", extractErrorMessage(e));
             }
             runOnClient(() -> {
-                localSaves.clear();
-                localSaves.addAll(tmp);
-                cachedLocalSaves.clear();
-                cachedLocalSaves.addAll(tmp);
+                localSaves.clear(); localSaves.addAll(tmp);
+                cachedLocalSaves.clear(); cachedLocalSaves.addAll(tmp);
                 lastLoadTimeMs = System.currentTimeMillis();
-                localScrollOffset = 0;
-                localSelectedIndex = -1;
-                localLoading = false;
+                localScrollOffset = 0; localSelectedIndex = -1; localLoading = false;
             });
         });
     }
+
     private void fetchCloudSaves() {
         cloudLoading = true;
         networkManager.listWorldSaves().whenComplete((json, err) -> {
             if (err != null) {
-                String cleanError = extractErrorMessage(err);
-                SaveManagerMod.LOGGER.warn("CloudSaveManager: list failed - {}", cleanError);
+                String msg = extractErrorMessage(err);
+                SaveManagerMod.LOGGER.warn("CloudSaves: list failed - {}", msg);
                 runOnClient(() -> {
-                    cloudLoading = false;
-                    cloudSaves.clear();
-                    if (cleanError.contains("account must be linked")) {
-                        toastManager.showError(cleanError, "Profile -> Edit profile -> Link");
-                    } else {
-                        toastManager.showError(cleanError);
-                    }
+                    cloudLoading = false; cloudSaves.clear();
+                    if (msg.contains("account must be linked")) toastManager.showError(msg, "Profile -> Edit profile -> Link");
+                    else toastManager.showError(msg);
                 });
                 return;
             }
             List<CloudSave> tmp = new ArrayList<>();
             try {
                 JsonArray arr = findArray(json, "saves", "items", "data", "list", "worlds");
-                if (arr == null && json.has("result") && json.get("result").isJsonObject()) {
+                if (arr == null && json.has("result") && json.get("result").isJsonObject())
                     arr = findArray(json.getAsJsonObject("result"), "saves", "items", "data", "list", "worlds");
-                }
                 if (arr == null) {
                     for (var e : json.entrySet()) {
-                        if (e.getValue() != null && e.getValue().isJsonArray()) {
-                            arr = e.getValue().getAsJsonArray();
-                            break;
-                        }
+                        if (e.getValue() != null && e.getValue().isJsonArray()) { arr = e.getValue().getAsJsonArray(); break; }
                     }
                 }
                 if (arr != null) {
@@ -241,18 +202,13 @@ public class SaveManagerScreen extends Screen {
                         if (arr.get(i).isJsonObject()) tmp.add(CloudSave.from(arr.get(i).getAsJsonObject()));
                     }
                 }
-            } catch (Throwable parseEx) {
-                String cleanError = extractErrorMessage(parseEx);
-                SaveManagerMod.LOGGER.warn("CloudSaveManager: parse error - {}", cleanError);
+            } catch (Throwable e) {
+                SaveManagerMod.LOGGER.warn("CloudSaves: parse error - {}", extractErrorMessage(e));
             }
             runOnClient(() -> {
-                cloudSaves.clear();
-                cloudSaves.addAll(tmp);
-                cachedCloudSaves.clear();
-                cachedCloudSaves.addAll(tmp);
-                cloudLoading = false;
-                cloudScrollOffset = 0;
-                cloudSelectedIndex = -1;
+                cloudSaves.clear(); cloudSaves.addAll(tmp);
+                cachedCloudSaves.clear(); cachedCloudSaves.addAll(tmp);
+                cloudLoading = false; cloudScrollOffset = 0; cloudSelectedIndex = -1;
             });
         });
     }
@@ -260,183 +216,103 @@ public class SaveManagerScreen extends Screen {
     private void fetchQuotaInfo() {
         networkManager.getQuotaInfo().whenComplete((json, err) -> {
             if (err != null) {
-                String cleanError = extractErrorMessage(err);
-                SaveManagerMod.LOGGER.warn("QuotaManager: failed to fetch quota - {}", cleanError);
+                SaveManagerMod.LOGGER.warn("Quota: fetch failed - {}", extractErrorMessage(err));
                 quotaFormatted = cachedQuotaFormatted;
                 runOnClient(() -> quotaLoading = false);
                 return;
             }
             try {
                 String quota = json.has("quotaFormatted") ? json.get("quotaFormatted").getAsString() : "5 GB";
-                quotaFormatted = quota;
-                cachedQuotaFormatted = quota;
-                quotaBytes = parseQuotaBytes(quota);
+                quotaFormatted = quota; cachedQuotaFormatted = quota; quotaBytes = parseQuotaBytes(quota);
             } catch (Exception e) {
-                String cleanError = extractErrorMessage(e);
-                SaveManagerMod.LOGGER.warn("QuotaManager: error parsing quota - {}", cleanError);
+                SaveManagerMod.LOGGER.warn("Quota: parse error - {}", extractErrorMessage(e));
                 quotaFormatted = cachedQuotaFormatted;
             }
             runOnClient(() -> quotaLoading = false);
         });
     }
 
-    private long parseQuotaBytes(String quotaFormatted) {
-        if (quotaFormatted == null || quotaFormatted.isEmpty()) {
-            return 5L * 1024L * 1024L * 1024L;
-        }
-        try {
-            String[] parts = quotaFormatted.trim().split("\\s+");
-            if (parts.length >= 2) {
-                double value = Double.parseDouble(parts[0]);
-                String unit = parts[1].toUpperCase();
-                long multiplier = switch (unit) {
-                    case "B" -> 1L;
-                    case "KB" -> 1024L;
-                    case "MB" -> 1024L * 1024L;
-                    case "GB" -> 1024L * 1024L * 1024L;
-                    case "TB" -> 1024L * 1024L * 1024L * 1024L;
-                    default -> 1024L * 1024L * 1024L;
-                };
-                return (long) (value * multiplier);
-            }
-        } catch (Exception e) {
-            SaveManagerMod.LOGGER.warn("QuotaManager: failed to parse quota bytes from '{}'", quotaFormatted);
-        }
-        return 5L * 1024L * 1024L * 1024L;
-    }
+    // ── Actions ──
 
     private void onUpload() {
         if (localSelectedIndex < 0 || localSelectedIndex >= localSaves.size()) return;
         if (networkManager.getApiKey() == null || networkManager.getApiKey().isBlank()) {
-            client.setScreen(new AccountLinkingScreen(this));
-            return;
+            client.setScreen(new AccountLinkingScreen(this)); return;
         }
         LocalSave s = localSaves.get(localSelectedIndex);
         localLoading = true;
         networkManager.listWorldSaveNames().whenComplete((names, err) -> runOnClient(() -> {
-            if (err != null) {
-                localLoading = false;
-                client.setScreen(new AccountLinkingScreen(this));
-                return;
-            }
+            if (err != null) { localLoading = false; client.setScreen(new AccountLinkingScreen(this)); return; }
             String sanitized = sanitizeFolderName(s.worldName);
-            boolean exists = false;
-            if (names != null) {
-                for (String n : names) {
-                    if (n != null && (n.equalsIgnoreCase(s.worldName) || (!sanitized.isEmpty() && n.equalsIgnoreCase(sanitized)))) {
-                        exists = true;
-                        break;
-                    }
-                }
-            }
-            if (!exists) {
-                beginZipAndUpload(s);
-                return;
-            }
-            confirmPopup = new ConfirmPopup(
-                this,
-                "Overwrite Cloud Save?",
-                "A save named \"" + s.worldName + "\" already exists. Overwrite?",
-                () -> {
-                    confirmPopup = null;
-                    beginZipAndUpload(s);
-                },
-                () -> {
-                    confirmPopup = null;
-                    localLoading = false;
-                },
-                "Overwrite"
-            );
+            boolean exists = names != null && names.stream().anyMatch(n ->
+                    n != null && (n.equalsIgnoreCase(s.worldName) || (!sanitized.isEmpty() && n.equalsIgnoreCase(sanitized))));
+            if (!exists) { beginZipAndUpload(s); return; }
+            confirmPopup = new ConfirmPopup(this, "Overwrite Cloud Save?",
+                    "A save named \"" + s.worldName + "\" already exists. Overwrite?",
+                    () -> { confirmPopup = null; beginZipAndUpload(s); },
+                    () -> { confirmPopup = null; localLoading = false; }, "Overwrite");
         }));
     }
+
     private void beginZipAndUpload(LocalSave s) {
-        ACTIVE.upActive = true;
-        ACTIVE.zipping = true;
-        ACTIVE.bytes = 0L;
-        ACTIVE.total = -1L;
-        ACTIVE.lastTickNanos = System.nanoTime();
-        ACTIVE.lastBytes = 0L;
-        ACTIVE.speedBps = 0.0;
+        ACTIVE.reset(false);
         localLoading = true;
         new Thread(() -> {
             Path zip;
             try {
                 zip = zipWorld(s.dir, s.worldName.replaceAll("[\\\\/:*?\"<>|]+", "_"));
             } catch (Exception ex) {
-                String cleanError = extractErrorMessage(ex);
-                SaveManagerMod.LOGGER.warn("ZipManager: zip failed - {}", cleanError);
-                runOnClient(() -> {
-                    ACTIVE.upActive = false;
-                    ACTIVE.zipping = false;
-                    localLoading = false;
-                    toastManager.showError(cleanError);
-                });
+                String msg = extractErrorMessage(ex);
+                SaveManagerMod.LOGGER.warn("Zip failed - {}", msg);
+                runOnClient(() -> { ACTIVE.upActive = false; ACTIVE.zipping = false; localLoading = false; toastManager.showError(msg); });
                 return;
             }
             runOnClient(() -> startUpload(zip, s.worldName));
         }, "SaveManager-zip").start();
     }
+
     private void startUpload(Path zipFile, String worldName) {
         ACTIVE.zipping = false;
-        ACTIVE.bytes = 0L;
-        ACTIVE.total = -1L;
-        ACTIVE.lastTickNanos = System.nanoTime();
-        ACTIVE.lastBytes = 0L;
-        ACTIVE.speedBps = 0.0;
+        ACTIVE.bytes = 0L; ACTIVE.total = -1L;
+        ACTIVE.lastTickNanos = System.nanoTime(); ACTIVE.lastBytes = 0L; ACTIVE.speedBps = 0.0;
         try {
             networkManager.uploadWorldSave(worldName, zipFile, (sent, total) -> {
                 ACTIVE.bytes = Math.max(0L, sent);
                 if (total > 0) ACTIVE.total = total;
-                updateSpeed();
+                ACTIVE.updateSpeed();
             }).whenComplete((json, err) -> runOnClient(() -> {
                 try { Files.deleteIfExists(zipFile); } catch (Throwable ignored) {}
-                ACTIVE.upActive = false;
-                ACTIVE.zipping = false;
-                localLoading = false;
+                ACTIVE.upActive = false; ACTIVE.zipping = false; localLoading = false;
                 if (err != null) {
-                    String cleanError = extractErrorMessage(err);
-                    SaveManagerMod.LOGGER.warn("UploadManager: upload failed - {}", cleanError);
-                    toastManager.showError(cleanError);
+                    String msg = extractErrorMessage(err);
+                    SaveManagerMod.LOGGER.warn("Upload failed - {}", msg);
+                    toastManager.showError(msg);
                 } else {
                     toastManager.showSuccess("Upload complete: " + worldName);
-                    fetchLocalSaves();
-                    fetchCloudSaves();
+                    fetchLocalSaves(); fetchCloudSaves();
                 }
             }));
         } catch (Throwable t) {
             try { Files.deleteIfExists(zipFile); } catch (Throwable ignored) {}
-            ACTIVE.upActive = false;
-            localLoading = false;
+            ACTIVE.upActive = false; localLoading = false;
             toastManager.showError("Upload failed");
         }
     }
+
     private void onDownload() {
         if (cloudSelectedIndex < 0 || cloudSelectedIndex >= cloudSaves.size()) return;
         CloudSave s = cloudSaves.get(cloudSelectedIndex);
-        cloudLoading = true;
         Path savesDir = client.runDirectory.toPath().resolve("saves");
         try { Files.createDirectories(savesDir); } catch (Exception ignored) {}
 
         String baseName = sanitizeFolderName(s.worldName);
         if (baseName.isEmpty()) baseName = "world";
-        Path targetBase = savesDir.resolve(baseName);
 
-        if (Files.exists(targetBase)) {
-            cloudLoading = false;
-            confirmPopup = new ConfirmPopup(
-                this,
-                "Overwrite Local Save?",
-                "A save named \"" + s.worldName + "\" already exists. Overwrite?",
-                () -> {
-                    confirmPopup = null;
-                    beginDownload(s, savesDir);
-                },
-                () -> {
-                    confirmPopup = null;
-                    cloudLoading = false;
-                },
-                "Overwrite"
-            );
+        if (Files.exists(savesDir.resolve(baseName))) {
+            confirmPopup = new ConfirmPopup(this, "Overwrite Local Save?",
+                    "A save named \"" + s.worldName + "\" already exists. Overwrite?",
+                    () -> { confirmPopup = null; beginDownload(s, savesDir); },
+                    () -> { confirmPopup = null; }, "Overwrite");
             return;
         }
         beginDownload(s, savesDir);
@@ -445,33 +321,22 @@ public class SaveManagerScreen extends Screen {
     private void beginDownload(CloudSave s, Path savesDir) {
         cloudLoading = true;
         Path tmpDir;
-        try {
-            tmpDir = Files.createTempDirectory("savemanager-dl-");
-        } catch (Exception e) {
-            toastManager.showError("Failed to prepare temp dir");
-            cloudLoading = false;
-            return;
-        }
-        ACTIVE.dlActive = true;
-        ACTIVE.unzipping = false;
-        ACTIVE.bytes = 0L;
-        ACTIVE.total = s.fileSizeBytes > 0 ? s.fileSizeBytes : -1L;
-        ACTIVE.lastTickNanos = System.nanoTime();
-        ACTIVE.lastBytes = 0L;
-        ACTIVE.speedBps = 0.0;
+        try { tmpDir = Files.createTempDirectory("savemanager-dl-"); }
+        catch (Exception e) { toastManager.showError("Failed to prepare temp dir"); cloudLoading = false; return; }
+
+        ACTIVE.reset(true);
+        if (s.fileSizeBytes > 0) ACTIVE.total = s.fileSizeBytes;
+
         networkManager.downloadWorldSave(s.id, tmpDir, (downloaded, total) -> {
             ACTIVE.bytes = Math.max(0L, downloaded);
             if (total > 0) ACTIVE.total = total;
-            updateSpeed();
+            ACTIVE.updateSpeed();
         }).whenComplete((zipPath, err) -> {
             ACTIVE.dlActive = false;
             if (err != null) {
-                String cleanError = extractErrorMessage(err);
-                SaveManagerMod.LOGGER.warn("DownloadManager: download failed - {}", cleanError);
-                runOnClient(() -> {
-                    cloudLoading = false;
-                    toastManager.showError(cleanError);
-                });
+                String msg = extractErrorMessage(err);
+                SaveManagerMod.LOGGER.warn("Download failed - {}", msg);
+                runOnClient(() -> { cloudLoading = false; toastManager.showError(msg); });
                 return;
             }
             runOnClient(() -> ACTIVE.unzipping = true);
@@ -483,114 +348,58 @@ public class SaveManagerScreen extends Screen {
                 deleteDirectoryRecursively(targetBase);
                 Files.createDirectories(targetBase);
                 unzipSmart(zipPath, targetBase);
-                runOnClient(() -> {
-                    toastManager.showSuccess("Download complete");
-                    fetchLocalSaves();
-                });
+                runOnClient(() -> { toastManager.showSuccess("Download complete"); fetchLocalSaves(); });
             } catch (Exception ex) {
-                String cleanError = extractErrorMessage(ex);
-                SaveManagerMod.LOGGER.warn("UnzipManager: unzip failed - {}", cleanError);
-                runOnClient(() -> toastManager.showError(cleanError));
+                String msg = extractErrorMessage(ex);
+                SaveManagerMod.LOGGER.warn("Unzip failed - {}", msg);
+                runOnClient(() -> toastManager.showError(msg));
             } finally {
                 try { Files.deleteIfExists(zipPath); } catch (Exception ignored) {}
                 try { Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
-                runOnClient(() -> {
-                    ACTIVE.unzipping = false;
-                    cloudLoading = false;
-                });
+                runOnClient(() -> { ACTIVE.unzipping = false; cloudLoading = false; });
             }
         });
     }
+
     private void onDelete() {
         if (localSelectedIndex >= 0 && localSelectedIndex < localSaves.size()) {
             LocalSave s = localSaves.get(localSelectedIndex);
-            confirmPopup = new ConfirmPopup(
-                this,
-                "Delete Local Save?",
-                "Are you sure you want to permanently delete \"" + safe(s.worldName) + "\"?",
-                () -> {
-                    confirmPopup = null;
-                    deleteLocalSave(s);
-                },
-                () -> {
-                    confirmPopup = null;
-                },
-                "Delete"
-            );
+            confirmPopup = new ConfirmPopup(this, "Delete Local Save?",
+                    "Are you sure you want to permanently delete \"" + safe(s.worldName) + "\"?",
+                    () -> { confirmPopup = null; deleteLocalSave(s); }, () -> confirmPopup = null, "Delete");
             return;
         }
-
         if (cloudSelectedIndex < 0 || cloudSelectedIndex >= cloudSaves.size()) return;
         CloudSave s = cloudSaves.get(cloudSelectedIndex);
-
-        confirmPopup = new ConfirmPopup(
-            this,
-            "Delete Cloud Save?",
-            "Are you sure you want to permanently delete \"" + safe(s.worldName) + "\"?",
-            () -> {
-                confirmPopup = null;
-                cloudLoading = true;
-                networkManager.deleteWorldSave(s.id).whenComplete((resp, err) -> runOnClient(() -> {
-                    if (err != null) {
-                        String cleanError = extractErrorMessage(err);
-                        SaveManagerMod.LOGGER.warn("DeleteManager: delete failed - {}", cleanError);
-                        toastManager.showError(cleanError);
-                        cloudLoading = false;
-                        return;
-                    }
-                    toastManager.showSuccess("Deleted");
-                    cloudLoading = false;
-                    cloudSelectedIndex = -1;
-                    fetchCloudSaves();
-                }));
-            },
-            () -> {
-                confirmPopup = null;
-            },
-            "Delete"
-        );
+        confirmPopup = new ConfirmPopup(this, "Delete Cloud Save?",
+                "Are you sure you want to permanently delete \"" + safe(s.worldName) + "\"?",
+                () -> { confirmPopup = null; cloudLoading = true;
+                    networkManager.deleteWorldSave(s.id).whenComplete((resp, err) -> runOnClient(() -> {
+                        if (err != null) {
+                            String msg = extractErrorMessage(err);
+                            SaveManagerMod.LOGGER.warn("Delete failed - {}", msg);
+                            toastManager.showError(msg); cloudLoading = false; return;
+                        }
+                        toastManager.showSuccess("Deleted"); cloudLoading = false; cloudSelectedIndex = -1; fetchCloudSaves();
+                    }));
+                }, () -> confirmPopup = null, "Delete");
     }
 
     private void deleteLocalSave(LocalSave s) {
         new Thread(() -> {
             try {
                 deleteDirectoryRecursively(s.dir);
-                runOnClient(() -> {
-                    toastManager.showSuccess("Deleted");
-                    localSelectedIndex = -1;
-                    fetchLocalSaves();
-                });
+                runOnClient(() -> { toastManager.showSuccess("Deleted"); localSelectedIndex = -1; fetchLocalSaves(); });
             } catch (Exception e) {
-                String cleanError = extractErrorMessage(e);
-                SaveManagerMod.LOGGER.warn("DeleteManager: local delete failed - {}", cleanError);
-                runOnClient(() -> toastManager.showError(cleanError));
+                String msg = extractErrorMessage(e);
+                SaveManagerMod.LOGGER.warn("Local delete failed - {}", msg);
+                runOnClient(() -> toastManager.showError(msg));
             }
         }, "SaveManager-delete").start();
     }
 
-    private void updateButtonStates() {
-        boolean opActive = ACTIVE.dlActive || ACTIVE.upActive || ACTIVE.zipping || ACTIVE.unzipping;
-        boolean isLoading = localLoading || cloudLoading;
-        boolean hasLocalSelected = localSelectedIndex >= 0 && localSelectedIndex < localSaves.size();
-        boolean hasCloudSelected = cloudSelectedIndex >= 0 && cloudSelectedIndex < cloudSaves.size();
+    // ── Rendering ──
 
-        if (uploadBtn != null) uploadBtn.active = hasLocalSelected && !opActive;
-        if (downloadBtn != null) downloadBtn.active = hasCloudSelected && !opActive;
-        if (deleteBtn != null) deleteBtn.active = (hasLocalSelected || hasCloudSelected) && !opActive;
-        if (refreshBtn != null) refreshBtn.active = !isLoading;
-    }
-
-    private void updateSpeed() {
-        long now = System.nanoTime();
-        long dtNs = now - ACTIVE.lastTickNanos;
-        long dBytes = ACTIVE.bytes - ACTIVE.lastBytes;
-        if (dtNs > 50_000_000L) {
-            double instBps = dBytes > 0 ? (dBytes * 1_000_000_000.0) / dtNs : 0.0;
-            ACTIVE.speedBps = ACTIVE.speedBps <= 0 ? instBps : (0.2 * instBps + 0.8 * ACTIVE.speedBps);
-            ACTIVE.lastTickNanos = now;
-            ACTIVE.lastBytes = ACTIVE.bytes;
-        }
-    }
     @Override
     public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
         super.render(ctx, mouseX, mouseY, delta);
@@ -598,18 +407,15 @@ public class SaveManagerScreen extends Screen {
         int cx = this.width / 2;
         ctx.drawCenteredTextWithShadow(textRenderer, title, cx, 10, 0xFFFFFFFF);
 
-        if (quotaLoading) {
-            renderTinyLoadingSpinner(ctx, cx, 28, delta);
-        } else {
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(computeQuotaLine()), cx, 22, 0xFFAAAAAA);
-        }
+        if (quotaLoading) renderTinySpinner(ctx, cx, 28, delta);
+        else ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(computeQuotaLine()), cx, 22, 0xFFAAAAAA);
 
         ctx.drawTextWithShadow(textRenderer, Text.literal("Local Saves"), localPanelX, 50, 0xFFFFFFFF);
         ctx.drawTextWithShadow(textRenderer, Text.literal("Cloud Saves"), cloudPanelX, 50, 0xFFFFFFFF);
-        renderLocalPanel(ctx, mouseX, mouseY, delta);
-        renderCloudPanel(ctx, mouseX, mouseY, delta);
-        boolean opActive = ACTIVE.dlActive || ACTIVE.upActive || ACTIVE.zipping || ACTIVE.unzipping;
-        if (opActive) {
+        renderSavePanel(ctx, mouseX, mouseY, delta, true);
+        renderSavePanel(ctx, mouseX, mouseY, delta, false);
+
+        if (ACTIVE.isActive()) {
             int statusY = this.height - 70;
             if (ACTIVE.zipping || ACTIVE.unzipping || ACTIVE.bytes <= 0L) {
                 spinner.setPosition(cx - 16, statusY);
@@ -627,17 +433,7 @@ public class SaveManagerScreen extends Screen {
         }
 
         toastManager.render(ctx, delta, mouseX, mouseY);
-
-        if (confirmPopup != null) {
-            confirmPopup.render(ctx, mouseX, mouseY, delta);
-        }
-    }
-    private void renderLocalPanel(DrawContext ctx, int mouseX, int mouseY, float delta) {
-        renderSavePanel(ctx, mouseX, mouseY, delta, true);
-    }
-
-    private void renderCloudPanel(DrawContext ctx, int mouseX, int mouseY, float delta) {
-        renderSavePanel(ctx, mouseX, mouseY, delta, false);
+        if (confirmPopup != null) confirmPopup.render(ctx, mouseX, mouseY, delta);
     }
 
     private void renderSavePanel(DrawContext ctx, int mouseX, int mouseY, float delta, boolean isLocal) {
@@ -654,253 +450,162 @@ public class SaveManagerScreen extends Screen {
 
         boolean blockHover = toastManager.isMouseOverToast(mouseX, mouseY) || confirmPopup != null;
 
-        long windowHandle = client.getWindow().getHandle();
-        if (scrollBar.updateAndRender(ctx, mouseX, mouseY, delta, windowHandle)) {
+        if (scrollBar.updateAndRender(ctx, mouseX, mouseY, delta, client.getWindow().getHandle())) {
             int newOffset = (int) Math.round(scrollBar.getScrollPercentage() * maxScroll);
-            if (isLocal) localScrollOffset = newOffset;
-            else cloudScrollOffset = newOffset;
+            if (isLocal) localScrollOffset = newOffset; else cloudScrollOffset = newOffset;
             scrollOffset = newOffset;
         }
 
         ctx.enableScissor(panelX, listY, panelX + panelW, listY + listH);
         int end = Math.min(scrollOffset + VISIBLE_ROWS, saves.size());
-
         for (int i = scrollOffset; i < end; i++) {
             int ry = listY + (i - scrollOffset) * ROW_HEIGHT;
+            if (!blockHover && i == selectedIndex) ctx.fill(panelX, ry - 1, panelX + panelW, ry + ROW_HEIGHT - 2, 0x66FFFFFF);
 
-            boolean isHovered = !blockHover && i == selectedIndex;
-            if (isHovered) {
-                ctx.fill(panelX, ry - 1, panelX + panelW, ry + ROW_HEIGHT - 2, 0x66FFFFFF);
-            }
-
-            String worldName;
-            String info;
+            String worldName, info;
             if (isLocal) {
                 LocalSave s = (LocalSave) saves.get(i);
                 worldName = s.worldName;
-                info = formatBytes(s.sizeBytes) + " • " + shortDateMillis(s.lastModified);
+                info = formatBytes(s.sizeBytes) + " \u2022 " + shortDateMillis(s.lastModified);
             } else {
                 CloudSave s = (CloudSave) saves.get(i);
                 worldName = s.worldName;
-                info = formatBytes(s.fileSizeBytes) + " • " + shortDate(s.updatedAt);
+                info = formatBytes(s.fileSizeBytes) + " \u2022 " + shortDate(s.updatedAt);
             }
-
             ctx.drawTextWithShadow(textRenderer, Text.literal(safe(worldName)), panelX + 4, ry + 2, 0xFFDDDDDD);
             ctx.drawTextWithShadow(textRenderer, Text.literal(info), panelX + 4, ry + 12, 0xFF888888);
             ctx.fill(panelX, ry + ROW_HEIGHT - 2, panelX + panelW, ry + ROW_HEIGHT - 1, 0x22FFFFFF);
         }
-
         ctx.disableScissor();
     }
+
     private void renderProgressBar(DrawContext ctx, int cx, int statusY) {
-        long bytes = ACTIVE.bytes;
-        long total = ACTIVE.total;
+        long bytes = ACTIVE.bytes, total = ACTIVE.total;
         double speed = ACTIVE.speedBps;
-        int barW = 360;
-        int barH = 8;
-        int bx = cx - (barW / 2);
-        int by = statusY + 14;
+        int barW = 360, barH = 8, bx = cx - barW / 2, by = statusY + 14;
         ctx.fill(bx, by, bx + barW, by + barH, 0xFF444444);
         if (total > 0) {
             double frac = Math.min(1.0, (double) bytes / total);
             ctx.fill(bx, by, bx + (int) (barW * frac), by + barH, 0xFFCCCCCC);
-            int pct = (int) Math.min(100, (bytes * 100.0) / total);
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(pct + "%"), cx, by - 10, 0xFFFFFFFF);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal((int) Math.min(100, bytes * 100.0 / total) + "%"), cx, by - 10, 0xFFFFFFFF);
             String info = formatBytes(bytes) + " / " + formatBytes(total);
             if (speed > 1) {
-                long remaining = Math.max(0L, total - bytes);
-                long etaSec = (long) Math.ceil(remaining / Math.max(1.0, speed));
-                info += " • " + formatBytes((long) speed) + "/s • ETA " + formatDuration(etaSec);
+                long etaSec = (long) Math.ceil(Math.max(0L, total - bytes) / Math.max(1.0, speed));
+                info += " \u2022 " + formatBytes((long) speed) + "/s \u2022 ETA " + formatDuration(etaSec);
             }
             ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(info), cx, by + barH + 2, 0xFFCCCCCC);
         }
     }
 
+    private void updateButtonStates() {
+        boolean opActive = ACTIVE.isActive();
+        boolean hasLocal = localSelectedIndex >= 0 && localSelectedIndex < localSaves.size();
+        boolean hasCloud = cloudSelectedIndex >= 0 && cloudSelectedIndex < cloudSaves.size();
+        if (uploadBtn != null) uploadBtn.active = hasLocal && !opActive;
+        if (downloadBtn != null) downloadBtn.active = hasCloud && !opActive;
+        if (deleteBtn != null) deleteBtn.active = (hasLocal || hasCloud) && !opActive;
+        if (refreshBtn != null) refreshBtn.active = !localLoading && !cloudLoading;
+    }
+
+    // ── Input handling ──
+
     @Override
     public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean consumed) {
-        double mouseX = click.x();
-        double mouseY = click.y();
-        int button = click.button();
+        double mx = click.x(), my = click.y();
+        if (confirmPopup != null) return confirmPopup.mouseClicked(click, consumed);
+        if (toastManager.mouseClicked(click, consumed)) return true;
+        if (toastManager.isMouseOverToast(mx, my) || consumed) return true;
+        if (super.mouseClicked(click, false)) return true;
 
-        if (confirmPopup != null) {
-            return confirmPopup.mouseClicked(click, consumed);
-        }
-
-        if (toastManager.mouseClicked(click, consumed)) {
-            return true;
-        }
-
-        if (toastManager.isMouseOverToast(mouseX, mouseY)) {
-            return true;
-        }
-
-        if (consumed) {
-            return true;
-        }
-
-        if (toastManager.isMouseOverToast(mouseX, mouseY)) {
-            return true;
-        }
-
-        if (super.mouseClicked(click, false)) {
-            return true;
-        }
-
-        if (button == 0 && !localLoading && !cloudLoading && !ACTIVE.dlActive && !ACTIVE.upActive) {
-            if (mouseX >= localPanelX && mouseX < localPanelX + localPanelW && mouseY >= listY && mouseY < listY + listH) {
-                int rowIdx = (int) ((mouseY - listY) / ROW_HEIGHT) + localScrollOffset;
-                if (rowIdx >= 0 && rowIdx < localSaves.size()) {
-                    int clickY = listY + ((rowIdx - localScrollOffset) * ROW_HEIGHT);
-                    if (mouseY >= clickY && mouseY < clickY + ROW_HEIGHT) {
-                        localSelectedIndex = rowIdx;
-                        cloudSelectedIndex = -1;
-                        return true;
-                    }
-                }
-            }
-            if (mouseX >= cloudPanelX && mouseX < cloudPanelX + cloudPanelW && mouseY >= listY && mouseY < listY + listH) {
-                int rowIdx = (int) ((mouseY - listY) / ROW_HEIGHT) + cloudScrollOffset;
-                if (rowIdx >= 0 && rowIdx < cloudSaves.size()) {
-                    int clickY = listY + ((rowIdx - cloudScrollOffset) * ROW_HEIGHT);
-                    if (mouseY >= clickY && mouseY < clickY + ROW_HEIGHT) {
-                        cloudSelectedIndex = rowIdx;
-                        localSelectedIndex = -1;
-                        return true;
-                    }
-                }
-            }
+        if (click.button() == 0 && !localLoading && !cloudLoading && !ACTIVE.dlActive && !ACTIVE.upActive) {
+            int idx = clickedRowIndex(mx, my, localPanelX, localPanelW, localScrollOffset, localSaves.size());
+            if (idx >= 0) { localSelectedIndex = idx; cloudSelectedIndex = -1; return true; }
+            idx = clickedRowIndex(mx, my, cloudPanelX, cloudPanelW, cloudScrollOffset, cloudSaves.size());
+            if (idx >= 0) { cloudSelectedIndex = idx; localSelectedIndex = -1; return true; }
         }
         return false;
     }
-    @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
-        if (confirmPopup != null) {
-            if (confirmPopup.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)) {
-                return true;
-            }
-        }
 
+    private int clickedRowIndex(double mx, double my, int panelX, int panelW, int scrollOffset, int count) {
+        if (mx < panelX || mx >= panelX + panelW || my < listY || my >= listY + listH) return -1;
+        int rowIdx = (int) ((my - listY) / ROW_HEIGHT) + scrollOffset;
+        if (rowIdx < 0 || rowIdx >= count) return -1;
+        int clickY = listY + ((rowIdx - scrollOffset) * ROW_HEIGHT);
+        return (my >= clickY && my < clickY + ROW_HEIGHT) ? rowIdx : -1;
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double h, double v) {
+        if (confirmPopup != null && confirmPopup.mouseScrolled(mouseX, mouseY, h, v)) return true;
         if (mouseX >= localPanelX && mouseX < localPanelX + localPanelW + 20) {
-            int maxScroll = Math.max(0, localSaves.size() - VISIBLE_ROWS);
-            localScrollOffset = Math.max(0, Math.min(maxScroll, localScrollOffset - (int) verticalAmount));
+            localScrollOffset = clampScroll(localScrollOffset - (int) v, localSaves.size());
             return true;
         }
         if (mouseX >= cloudPanelX && mouseX < cloudPanelX + cloudPanelW + 20) {
-            int maxScroll = Math.max(0, cloudSaves.size() - VISIBLE_ROWS);
-            cloudScrollOffset = Math.max(0, Math.min(maxScroll, cloudScrollOffset - (int) verticalAmount));
+            cloudScrollOffset = clampScroll(cloudScrollOffset - (int) v, cloudSaves.size());
             return true;
         }
-        return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+        return super.mouseScrolled(mouseX, mouseY, h, v);
+    }
+
+    private int clampScroll(int offset, int count) {
+        return Math.max(0, Math.min(Math.max(0, count - VISIBLE_ROWS), offset));
     }
 
     @Override
-    public boolean shouldCloseOnEsc() {
-        return true;
-    }
+    public boolean shouldCloseOnEsc() { return true; }
 
     @Override
     public void close() {
-        if (confirmPopup != null) {
-            confirmPopup = null;
-        } else {
-            closeScreen();
+        if (confirmPopup != null) confirmPopup = null;
+        else closeScreen();
+    }
+
+    // ── Navigation & utilities ──
+
+    private void closeScreen() {
+        if (client == null) return;
+        if (parent instanceof SelectWorldScreen) client.setScreen(parent);
+        else client.setScreen(new SelectWorldScreen(ScreenUtils.resolveRootParent(parent)));
+    }
+
+    private void openSavesFolder() {
+        try {
+            Path savesDir = client.runDirectory.toPath().resolve("saves");
+            Files.createDirectories(savesDir);
+            net.minecraft.util.Util.getOperatingSystem().open(savesDir.toFile());
+        } catch (Exception e) {
+            SaveManagerMod.LOGGER.warn("Failed to open saves folder - {}", extractErrorMessage(e));
+            toastManager.showError("Failed to open saves folder");
         }
     }
+
+    private void runOnClient(Runnable r) { if (client != null) client.execute(r); }
 
     private String computeQuotaLine() {
         long used = cloudSaves.stream().mapToLong(s -> Math.max(0L, s.fileSizeBytes)).sum();
-        long left = Math.max(0L, quotaBytes - used);
-        return formatBytes(used) + " of " + quotaFormatted + " (" + formatBytes(left) + " left)";
+        return formatBytes(used) + " of " + quotaFormatted + " (" + formatBytes(Math.max(0L, quotaBytes - used)) + " left)";
     }
-    private void closeScreen() {
-        if (client != null) {
-            if (parent instanceof SelectWorldScreen) {
-                client.setScreen(parent);
-            } else {
-                client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
+
+    private static long parseQuotaBytes(String formatted) {
+        if (formatted == null || formatted.isEmpty()) return 5L * 1024L * 1024L * 1024L;
+        try {
+            String[] parts = formatted.trim().split("\\s+");
+            if (parts.length >= 2) {
+                double value = Double.parseDouble(parts[0]);
+                long mult = switch (parts[1].toUpperCase()) {
+                    case "B" -> 1L; case "KB" -> 1024L; case "MB" -> 1024L * 1024L;
+                    case "GB" -> 1024L * 1024L * 1024L; case "TB" -> 1024L * 1024L * 1024L * 1024L;
+                    default -> 1024L * 1024L * 1024L;
+                };
+                return (long) (value * mult);
             }
-        }
-    }
-    private void runOnClient(Runnable r) {
-        if (client != null) client.execute(r);
+        } catch (Exception ignored) {}
+        return 5L * 1024L * 1024L * 1024L;
     }
 
-    private static String extractErrorMessage(Throwable err) {
-        if (err == null) return "Unknown error";
+    // ── File I/O helpers ──
 
-        Throwable cause = err;
-        while (cause.getCause() != null &&
-               (cause instanceof java.util.concurrent.CompletionException ||
-                cause instanceof java.util.concurrent.ExecutionException)) {
-            cause = cause.getCause();
-        }
-
-        String msg = cause.getMessage();
-        if (msg == null || msg.isBlank()) {
-            msg = cause.getClass().getSimpleName();
-        }
-
-        msg = msg.replaceFirst("^Request failed: \\d+ - ", "");
-        msg = msg.replaceFirst("^Upload failed: ", "");
-        msg = msg.replaceFirst("^HTTP \\d+: ", "");
-
-        if (msg.contains("{") && msg.contains("\"error\"")) {
-            try {
-                int start = msg.indexOf('{');
-                int end = msg.lastIndexOf('}') + 1;
-                if (start >= 0 && end > start) {
-                    String jsonPart = msg.substring(start, end);
-                    JsonObject json = new Gson().fromJson(jsonPart, JsonObject.class);
-                    if (json != null && json.has("error")) {
-                        return json.get("error").getAsString();
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-
-        return msg;
-    }
-
-    private static String safe(String s) { return s == null ? "" : s; }
-    private static String shortDate(String iso) {
-        if (iso == null) return "";
-        int t = iso.indexOf('T');
-        return t > 0 ? iso.substring(0, t) : iso;
-    }
-    private static String shortDateMillis(long epochMillis) {
-        if (epochMillis <= 0) return "";
-        return DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(epochMillis));
-    }
-    private static String formatBytes(long n) {
-        if (n < 1024) return n + " B";
-        int u = -1;
-        double d = n;
-        String[] units = {"KB", "MB", "GB", "TB"};
-        do { d /= 1024; u++; } while (d >= 1024 && u < units.length - 1);
-        return String.format(java.util.Locale.ROOT, "%.1f %s", d, units[u]);
-    }
-    private static String formatDuration(long seconds) {
-        if (seconds <= 0) return "0s";
-        long h = seconds / 3600, m = (seconds % 3600) / 60, s = seconds % 60;
-        if (h > 0) return String.format("%dh %02dm", h, m);
-        if (m > 0) return String.format("%dm %02ds", m, s);
-        return String.format("%ds", s);
-    }
-    private static String sanitizeFolderName(String s) {
-        if (s == null) return "";
-        String clean = s.trim().replaceAll("[\\\\/:*?\"<>|]+", "_");
-        return clean.isBlank() ? "" : clean;
-    }
-    private static Path ensureUniqueDir(Path parent, String baseName) {
-        Path p = parent.resolve(baseName);
-        if (!Files.exists(p)) return p;
-        int idx = 1;
-        while (true) {
-            Path cand = parent.resolve(baseName + "-" + idx);
-            if (!Files.exists(cand)) return cand;
-            idx++;
-        }
-    }
     private static void unzipSmart(Path zipFile, Path targetBase) throws Exception {
         String root = detectSingleRootDir(zipFile);
         try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(Files.newInputStream(zipFile))) {
@@ -917,6 +622,7 @@ public class SaveManagerScreen extends Screen {
             }
         }
     }
+
     private static String detectSingleRootDir(Path zipFile) throws Exception {
         try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zipFile.toFile())) {
             String root = null;
@@ -932,9 +638,10 @@ public class SaveManagerScreen extends Screen {
             return root;
         }
     }
+
     private static Path zipWorld(Path worldDir, String worldName) throws Exception {
         Path zip = Files.createTempFile("savemanager-" + worldName + "-", ".zip");
-        try (java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(Files.newOutputStream(zip, StandardOpenOption.WRITE))) {
+        try (var zos = new java.util.zip.ZipOutputStream(Files.newOutputStream(zip, StandardOpenOption.WRITE))) {
             Files.walkFileTree(worldDir, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws java.io.IOException {
@@ -952,128 +659,78 @@ public class SaveManagerScreen extends Screen {
         }
         return zip;
     }
-    private static JsonArray findArray(JsonObject obj, String... names) {
-        for (String n : names) {
-            if (!obj.has(n)) continue;
-            var e = obj.get(n);
-            if (e != null && e.isJsonArray()) return e.getAsJsonArray();
-        }
-        return null;
-    }
-    private static String getString(JsonObject obj, String... names) {
-        for (String n : names) {
-            if (!obj.has(n)) continue;
-            var e = obj.get(n);
-            if (e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isString()) return e.getAsString();
-        }
-        return "";
-    }
-    private static long getLong(JsonObject obj, String... names) {
-        for (String n : names) {
-            if (!obj.has(n)) continue;
-            var e = obj.get(n);
-            if (e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) return e.getAsLong();
-        }
-        return 0L;
-    }
-    private static Screen resolveRootParent(Screen parent) {
-        Screen p = parent;
-        int guard = 0;
-        while (p instanceof SelectWorldScreen && guard++ < 8) {
-            try {
-                Field f = SelectWorldScreen.class.getDeclaredField("parent");
-                f.setAccessible(true);
-                Screen next = (Screen) f.get(p);
-                if (next == null || next == p) break;
-                p = next;
-            } catch (Throwable ignored) { break; }
-        }
-        return p;
-    }
-    private String loadApiKeyFromDisk() {
-        try {
-            File configFile = new File(new File(MinecraftClient.getInstance().runDirectory, "config"), "save-manager-settings.json");
-            if (!configFile.exists()) return null;
-            try (FileReader reader = new FileReader(configFile)) {
-                JsonObject json = new Gson().fromJson(reader, JsonObject.class);
-                if (json == null) return null;
-                if (json.has("encryptedApiToken")) return decrypt(json.get("encryptedApiToken").getAsString());
-                if (json.has("apiToken")) return json.get("apiToken").getAsString();
-            }
-        } catch (Exception e) {
-            String cleanError = extractErrorMessage(e);
-            SaveManagerMod.LOGGER.warn("ConfigManager: error loading API key - {}", cleanError);
-        }
-        return null;
-    }
 
     private static void deleteDirectoryRecursively(Path dir) throws Exception {
         if (!Files.exists(dir)) return;
         Files.walkFileTree(dir, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws java.io.IOException {
-                Files.delete(file);
-                return FileVisitResult.CONTINUE;
-            }
-            @Override
-            public FileVisitResult postVisitDirectory(Path dir, java.io.IOException exc) throws java.io.IOException {
-                if (exc != null) throw exc;
-                Files.delete(dir);
-                return FileVisitResult.CONTINUE;
-            }
+            @Override public FileVisitResult visitFile(Path f, BasicFileAttributes a) throws java.io.IOException { Files.delete(f); return FileVisitResult.CONTINUE; }
+            @Override public FileVisitResult postVisitDirectory(Path d, java.io.IOException e) throws java.io.IOException { if (e != null) throw e; Files.delete(d); return FileVisitResult.CONTINUE; }
         });
     }
 
-    private String decrypt(String base64) throws Exception {
-        byte[] data = java.util.Base64.getDecoder().decode(base64);
-        if (data.length < 28) throw new IllegalArgumentException("Invalid data");
-        byte[] iv = new byte[12];
-        byte[] ct = new byte[data.length - 12];
-        System.arraycopy(data, 0, iv, 0, 12);
-        System.arraycopy(data, 12, ct, 0, ct.length);
-        javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(javax.crypto.Cipher.DECRYPT_MODE,
-                new javax.crypto.spec.SecretKeySpec(MessageDigest.getInstance("SHA-256").digest("SaveManagerSecKey.v1".getBytes(StandardCharsets.UTF_8)), "AES"),
-                new javax.crypto.spec.GCMParameterSpec(128, iv));
-        return new String(cipher.doFinal(ct), StandardCharsets.UTF_8);
+    // ── JSON helpers ──
+
+    private static JsonArray findArray(JsonObject obj, String... names) {
+        for (String n : names) { if (!obj.has(n)) continue; var e = obj.get(n); if (e != null && e.isJsonArray()) return e.getAsJsonArray(); }
+        return null;
     }
-    private static class LocalSave {
+
+    private static String getString(JsonObject obj, String... names) {
+        for (String n : names) { if (!obj.has(n)) continue; var e = obj.get(n); if (e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isString()) return e.getAsString(); }
+        return "";
+    }
+
+    private static long getLong(JsonObject obj, String... names) {
+        for (String n : names) { if (!obj.has(n)) continue; var e = obj.get(n); if (e != null && e.isJsonPrimitive() && e.getAsJsonPrimitive().isNumber()) return e.getAsLong(); }
+        return 0L;
+    }
+
+    // ── Tiny spinner for quota loading ──
+
+    private static float tinySpinnerAngle = 0f;
+
+    private void renderTinySpinner(DrawContext ctx, int cx, int cy, float delta) {
+        tinySpinnerAngle = (tinySpinnerAngle + 6f * delta) % 360f;
+        for (int i = 0; i < 8; i++) {
+            double rad = Math.toRadians(tinySpinnerAngle + i * 45f);
+            int x = (int) (cx + Math.cos(rad) * 4), y = (int) (cy + Math.sin(rad) * 4);
+            int color = (int) ((1f - i * 0.125f) * 255) << 24 | 0x00AAAAAA;
+            ctx.fill(x - 1, y - 1, x + 1, y + 1, color);
+        }
+    }
+
+    // ── Data classes ──
+
+    static class LocalSave {
         final Path dir;
         final String worldName;
         final long sizeBytes;
         final long lastModified;
+
         LocalSave(Path dir, String worldName, long sizeBytes, long lastModified) {
-            this.dir = dir;
-            this.worldName = worldName;
-            this.sizeBytes = sizeBytes;
-            this.lastModified = lastModified;
+            this.dir = dir; this.worldName = worldName; this.sizeBytes = sizeBytes; this.lastModified = lastModified;
         }
+
         static LocalSave fromDir(Path dir) {
             String name = dir.getFileName() != null ? dir.getFileName().toString() : dir.toString();
-            long lm = 0L;
-            try { lm = Files.getLastModifiedTime(dir).toMillis(); } catch (Exception ignored) {}
-            long size = 0L;
-            try { size = computeDirSize(dir); } catch (Exception ignored) {}
+            long lm = 0L; try { lm = Files.getLastModifiedTime(dir).toMillis(); } catch (Exception ignored) {}
+            long size = 0L; try { size = computeDirSize(dir); } catch (Exception ignored) {}
             return new LocalSave(dir, name, size, lm);
         }
+
         static long computeDirSize(Path dir) throws Exception {
             final long[] sum = {0L};
             Files.walkFileTree(dir, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    try { sum[0] += Files.size(file); } catch (Exception ignored) {}
-                    return FileVisitResult.CONTINUE;
-                }
+                @Override public FileVisitResult visitFile(Path f, BasicFileAttributes a) { try { sum[0] += Files.size(f); } catch (Exception ignored) {} return FileVisitResult.CONTINUE; }
             });
             return sum[0];
         }
     }
-    private static class CloudSave {
-        String id;
-        String worldName;
+
+    static class CloudSave {
+        String id, worldName, createdAt, updatedAt;
         long fileSizeBytes;
-        String createdAt;
-        String updatedAt;
+
         static CloudSave from(JsonObject o) {
             CloudSave s = new CloudSave();
             s.id = getString(o, "id", "saveId", "guid");
@@ -1083,33 +740,5 @@ public class SaveManagerScreen extends Screen {
             s.updatedAt = getString(o, "updatedAt", "updated", "updated_on", "lastModified");
             return s;
         }
-    }
-
-    private static float tinySpinnerAngle = 0f;
-
-    private void renderTinyLoadingSpinner(DrawContext ctx, int centerX, int centerY, float delta) {
-        tinySpinnerAngle += 6f * delta;
-        if (tinySpinnerAngle >= 360f) {
-            tinySpinnerAngle -= 360f;
-        }
-
-        int size = 3;
-        int radius = 4;
-
-        for (int i = 0; i < 8; i++) {
-            float angle = tinySpinnerAngle + (i * 45f);
-            double angleRad = Math.toRadians(angle);
-            int x = (int) (centerX + Math.cos(angleRad) * radius);
-            int y = (int) (centerY + Math.sin(angleRad) * radius);
-
-            float opacity = 1f - (i * 0.125f);
-            int color = (int) (opacity * 255) << 24 | 0x00AAAAAA;
-
-            ctx.fill(x - size / 2, y - size / 2, x + size / 2, y + size / 2, color);
-        }
-    }
-
-    public Screen getParent() {
-        return parent;
     }
 }

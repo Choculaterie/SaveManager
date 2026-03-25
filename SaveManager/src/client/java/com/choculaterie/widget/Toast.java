@@ -74,28 +74,7 @@ public class Toast {
     }
 
     private java.util.List<String> wrapText(net.minecraft.client.font.TextRenderer textRenderer, String text, int maxWidth) {
-        java.util.List<String> lines = new java.util.ArrayList<>();
-        String[] words = text.split(" ");
-        StringBuilder currentLine = new StringBuilder();
-
-        for (String word : words) {
-            String testLine = currentLine.isEmpty() ? word : currentLine + " " + word;
-            if (textRenderer.getWidth(testLine) <= maxWidth) {
-                if (!currentLine.isEmpty()) {
-                    currentLine.append(" ");
-                }
-                currentLine.append(word);
-            } else {
-                if (!currentLine.isEmpty()) {
-                    lines.add(currentLine.toString());
-                }
-                currentLine = new StringBuilder(word);
-            }
-        }
-        if (!currentLine.isEmpty()) {
-            lines.add(currentLine.toString());
-        }
-        return lines;
+        return com.choculaterie.util.FormatUtils.wrapText(textRenderer, text, maxWidth);
     }
 
     public void setTargetYPosition(int targetY) {

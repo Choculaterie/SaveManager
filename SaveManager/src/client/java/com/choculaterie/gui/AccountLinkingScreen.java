@@ -1,54 +1,24 @@
 package com.choculaterie.gui;
 
 import com.choculaterie.network.NetworkManager;
+import com.choculaterie.util.ConfigManager;
+import com.choculaterie.util.ScreenUtils;
 import com.choculaterie.widget.CustomButton;
 import com.choculaterie.widget.ToastManager;
-import com.google.gson.Gson;
-import com.google.gson.GsonBuilder;
-import com.google.gson.JsonObject;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.world.SelectWorldScreen;
 import net.minecraft.text.Text;
 
-import javax.crypto.Cipher;
-import javax.crypto.spec.GCMParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
-import java.util.Base64;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public class AccountLinkingScreen extends Screen {
-    private static final String CONFIG_FILE = "save-manager-settings.json";
-    private static final String KEY_MATERIAL = "SaveManagerSecKey.v1";
-    private static final byte[] AES_KEY;
-    private static final int GCM_TAG_BITS = 128;
-    private static final int IV_LEN = 12;
-    private static final SecureRandom RNG = new SecureRandom();
-
-    static {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            AES_KEY = md.digest(KEY_MATERIAL.getBytes(StandardCharsets.UTF_8));
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to init crypto key", e);
-        }
-    }
-
     private final Screen parent;
-    private final NetworkManager networkManager;
+    private final NetworkManager networkManager = new NetworkManager();
     private final ToastManager toastManager;
-
-    private CustomButton linkResetButton;
 
     private String currentFlowId = null;
     private String pendingLinkCode = null;
@@ -60,126 +30,94 @@ public class AccountLinkingScreen extends Screen {
     public AccountLinkingScreen(Screen parent) {
         super(Text.literal("Link Your Account"));
         this.parent = parent;
-        this.networkManager = new NetworkManager();
         this.toastManager = new ToastManager(null);
     }
 
     @Override
     protected void init() {
-        if (toastManager != null) {
-            try {
-                var f = ToastManager.class.getDeclaredField("client");
-                f.setAccessible(true);
-                f.set(toastManager, client);
-            } catch (Exception ignored) {}
-        }
+        toastManager.initClient(client);
 
         int btnSize = 20;
         int margin = 6;
-        CustomButton backButton = new CustomButton(margin, margin, btnSize, btnSize, Text.literal("←"), b -> goBack());
-        this.addDrawableChild(backButton);
+        addDrawableChild(new CustomButton(margin, margin, btnSize, btnSize, Text.literal("\u2190"), b -> goBack()));
 
-        int cx = this.width / 2;
-        int btnW = 100;
-        int btnY = this.height / 2;
-
-        String apiKey = loadApiKeyFromDisk();
+        String apiKey = ConfigManager.loadApiKey();
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
-        linkResetButton = new CustomButton(cx - (btnW / 2), btnY, btnW, 20,
-                Text.literal(hasKey ? "Reset" : "Link Account"), b -> handleLinkOrReset(hasKey));
-        this.addDrawableChild(linkResetButton);
+        int btnW = 100;
+        addDrawableChild(new CustomButton(
+                this.width / 2 - btnW / 2, this.height / 2, btnW, 20,
+                Text.literal(hasKey ? "Reset" : "Link Account"),
+                b -> handleLinkOrReset(hasKey)));
 
-        if (hasKey) {
-            networkManager.setApiKey(apiKey);
-        }
-    }
-
-    private void goBack() {
-        if (client != null) {
-            String apiKey = loadApiKeyFromDisk();
-            if (parent instanceof SaveManagerScreen) {
-                if (apiKey != null && !apiKey.isBlank()) {
-                    client.setScreen(parent);
-                } else {
-                    Screen grandParent = ((SaveManagerScreen) parent).getParent();
-                    if (grandParent instanceof SelectWorldScreen) {
-                        client.setScreen(grandParent);
-                    } else {
-                        client.setScreen(new SelectWorldScreen(resolveRootParent(grandParent)));
-                    }
-                }
-            } else if (parent instanceof SelectWorldScreen) {
-                client.setScreen(parent);
-            } else {
-                client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
-            }
-        }
+        if (hasKey) networkManager.setApiKey(apiKey);
     }
 
     private void handleLinkOrReset(boolean hasKey) {
         if (hasKey) {
             networkManager.setApiKey(null);
-            clearConfigToken();
+            ConfigManager.clearApiKey();
             client.setScreen(new AccountLinkingScreen(parent));
         } else {
             startOAuthFlow();
         }
     }
 
-    private void startOAuthFlow() {
-        if (isLinking) {
-            return;
+    private void goBack() {
+        if (client == null) return;
+        stopPolling();
+        String apiKey = ConfigManager.loadApiKey();
+        if (parent instanceof SaveManagerScreen sms) {
+            if (apiKey != null && !apiKey.isBlank()) {
+                client.setScreen(parent);
+            } else {
+                navigateToWorldSelect(sms.getParent());
+            }
+        } else {
+            navigateToWorldSelect(parent);
         }
+    }
 
+    private void navigateToWorldSelect(Screen target) {
+        if (target instanceof SelectWorldScreen) {
+            client.setScreen(target);
+        } else {
+            client.setScreen(new SelectWorldScreen(ScreenUtils.resolveRootParent(target)));
+        }
+    }
+
+    private void startOAuthFlow() {
+        if (isLinking) return;
         isLinking = true;
         linkingStatus = "Initiating...";
 
         networkManager.initiateOAuthFlow("SaveManager Mod").whenComplete((json, err) -> {
             if (err != null) {
-                runOnClient(() -> {
-                    isLinking = false;
-                    linkingStatus = "";
-                });
+                runOnClient(() -> { isLinking = false; linkingStatus = ""; });
                 return;
             }
-
             try {
                 currentFlowId = json.has("flowId") ? json.get("flowId").getAsString() : null;
                 int expiresIn = json.has("expiresInSeconds") ? json.get("expiresInSeconds").getAsInt() : 300;
-
                 if (currentFlowId == null) {
-                    runOnClient(() -> {
-                        isLinking = false;
-                        linkingStatus = "";
-                    });
+                    runOnClient(() -> { isLinking = false; linkingStatus = ""; });
                     return;
                 }
-
                 String authUrl = networkManager.getOAuthAuthorizeUrl(currentFlowId);
-
                 runOnClient(() -> {
                     linkingStatus = "Waiting for approval...";
-                    try {
-                        net.minecraft.util.Util.getOperatingSystem().open(new java.net.URI(authUrl));
-                    } catch (Exception e) {
-                    }
+                    try { net.minecraft.util.Util.getOperatingSystem().open(new java.net.URI(authUrl)); }
+                    catch (Exception ignored) {}
                 });
-
                 startPolling(currentFlowId, expiresIn);
-
             } catch (Exception e) {
-                runOnClient(() -> {
-                    isLinking = false;
-                    linkingStatus = "";
-                });
+                runOnClient(() -> { isLinking = false; linkingStatus = ""; });
             }
         });
     }
 
     private void startPolling(String flowId, int timeoutSeconds) {
         stopPolling();
-
         pollExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "SaveManager-OAuth-Poll");
             t.setDaemon(true);
@@ -188,96 +126,70 @@ public class AccountLinkingScreen extends Screen {
 
         final int[] attempts = {0};
         final int maxAttempts = timeoutSeconds / 2;
-        final net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+        final var mc = net.minecraft.client.MinecraftClient.getInstance();
 
         pollExecutor.scheduleAtFixedRate(() -> {
-            int currentAttempt = ++attempts[0];
-            if (currentAttempt >= maxAttempts) {
-                mc.execute(() -> {
-                    stopPolling();
-                    isLinking = false;
-                    linkingStatus = "";
-                });
+            if (++attempts[0] >= maxAttempts) {
+                mc.execute(() -> { stopPolling(); isLinking = false; linkingStatus = ""; });
                 return;
             }
-
             networkManager.getOAuthFlowStatus(flowId).whenComplete((json, err) -> {
-                if (err != null) {
-                    return;
-                }
-
+                if (err != null) return;
                 try {
-                    String status = json.has("status") ? json.get("status").getAsString() : "pending";
-
-                    if ("expired".equals(status)) {
-                        mc.execute(() -> {
-                            stopPolling();
-                            isLinking = false;
-                            linkingStatus = "";
-                        });
-                        return;
-                    }
-
-                    if ("cancelled".equals(status)) {
-                        mc.execute(() -> {
-                            stopPolling();
-                            isLinking = false;
-                            linkingStatus = "§cCancelled";
-                        });
-                        CompletableFuture.delayedExecutor(3, TimeUnit.SECONDS).execute(() -> {
-                            mc.execute(() -> linkingStatus = "");
-                        });
-                        return;
-                    }
-
-                    if ("pending".equals(status)) {
-                        mc.execute(() -> linkingStatus = "Waiting for approval...");
-                        return;
-                    }
-
-                    if ("completed".equals(status)) {
-                        String saveKey = json.has("saveKey") ? json.get("saveKey").getAsString() : null;
-                        boolean isMinecraftLinked = json.has("isMinecraftLinked") && json.get("isMinecraftLinked").getAsBoolean();
-                        boolean minecraftLinkingComplete = json.has("minecraftLinkingComplete") && json.get("minecraftLinkingComplete").getAsBoolean();
-                        String linkCode = json.has("linkCode") && !json.get("linkCode").isJsonNull() ? json.get("linkCode").getAsString() : null;
-
-                        if (saveKey == null) {
-                            return;
-                        }
-
-                        pendingSaveKey = saveKey;
-
-                        if (isMinecraftLinked) {
-                            stopPolling();
-                            mc.execute(() -> completeLinking(saveKey));
-                            return;
-                        }
-
-                        if (minecraftLinkingComplete) {
-                            stopPolling();
-                            mc.execute(() -> {
-                                if (mc.getNetworkHandler() != null) {
-                                    mc.getNetworkHandler().getConnection().disconnect(Text.literal("Linking complete"));
-                                }
-                                CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS).execute(() -> {
-                                    mc.execute(() -> completeLinking(saveKey));
-                                });
-                            });
-                            return;
-                        }
-
-                        if (linkCode != null && !linkCode.equals(pendingLinkCode)) {
-                            pendingLinkCode = linkCode;
-                            mc.execute(() -> {
-                                linkingStatus = "Linking MC account...";
-                                autoJoinServerAndLink(linkCode, saveKey);
-                            });
-                        }
-                    }
-                } catch (Exception e) {
-                }
+                    handlePollResponse(json, mc);
+                } catch (Exception ignored) {}
             });
         }, 0, 2, TimeUnit.SECONDS);
+    }
+
+    private void handlePollResponse(com.google.gson.JsonObject json, net.minecraft.client.MinecraftClient mc) {
+        String status = json.has("status") ? json.get("status").getAsString() : "pending";
+
+        switch (status) {
+            case "expired" -> mc.execute(() -> { stopPolling(); isLinking = false; linkingStatus = ""; });
+            case "cancelled" -> {
+                mc.execute(() -> { stopPolling(); isLinking = false; linkingStatus = "\u00a7cCancelled"; });
+                CompletableFuture.delayedExecutor(3, TimeUnit.SECONDS)
+                        .execute(() -> mc.execute(() -> linkingStatus = ""));
+            }
+            case "pending" -> mc.execute(() -> linkingStatus = "Waiting for approval...");
+            case "completed" -> handleCompleted(json, mc);
+        }
+    }
+
+    private void handleCompleted(com.google.gson.JsonObject json, net.minecraft.client.MinecraftClient mc) {
+        String saveKey = json.has("saveKey") ? json.get("saveKey").getAsString() : null;
+        if (saveKey == null) return;
+
+        boolean isMinecraftLinked = json.has("isMinecraftLinked") && json.get("isMinecraftLinked").getAsBoolean();
+        boolean linkingComplete = json.has("minecraftLinkingComplete") && json.get("minecraftLinkingComplete").getAsBoolean();
+        String linkCode = json.has("linkCode") && !json.get("linkCode").isJsonNull() ? json.get("linkCode").getAsString() : null;
+
+        pendingSaveKey = saveKey;
+
+        if (isMinecraftLinked) {
+            stopPolling();
+            mc.execute(() -> completeLinking(saveKey));
+            return;
+        }
+        if (linkingComplete) {
+            stopPolling();
+            mc.execute(() -> {
+                if (mc.getNetworkHandler() != null) {
+                    mc.getNetworkHandler().getConnection().disconnect(Text.literal("Linking complete"));
+                }
+                CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS)
+                        .execute(() -> mc.execute(() -> completeLinking(saveKey)));
+            });
+            return;
+        }
+        if (linkCode != null && !linkCode.equals(pendingLinkCode)) {
+            pendingLinkCode = linkCode;
+            mc.execute(() -> {
+                linkingStatus = "Linking MC account...";
+                autoJoinServerAndLink(linkCode);
+            });
+        }
     }
 
     private void stopPolling() {
@@ -287,50 +199,32 @@ public class AccountLinkingScreen extends Screen {
         }
     }
 
-    private void autoJoinServerAndLink(String linkCode, String saveKey) {
+    private void autoJoinServerAndLink(String linkCode) {
         linkingStatus = "Joining server...";
-
-        final net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
-
+        final var mc = net.minecraft.client.MinecraftClient.getInstance();
         try {
-            net.minecraft.client.network.ServerAddress serverAddress =
-                net.minecraft.client.network.ServerAddress.parse("mc.choculaterie.com");
-            net.minecraft.client.network.ServerInfo serverInfo =
-                new net.minecraft.client.network.ServerInfo("Choculaterie", "mc.choculaterie.com", net.minecraft.client.network.ServerInfo.ServerType.OTHER);
+            var serverAddress = net.minecraft.client.network.ServerAddress.parse("mc.choculaterie.com");
+            var serverInfo = new net.minecraft.client.network.ServerInfo(
+                    "Choculaterie", "mc.choculaterie.com", net.minecraft.client.network.ServerInfo.ServerType.OTHER);
 
-            final String[] linkCodeRef = {linkCode};
+            net.minecraft.client.gui.screen.multiplayer.ConnectScreen.connect(this, mc, serverAddress, serverInfo, false, null);
 
-            net.minecraft.client.gui.screen.multiplayer.ConnectScreen.connect(
-                this,
-                mc,
-                serverAddress,
-                serverInfo,
-                false,
-                null
-            );
-
-            CompletableFuture.delayedExecutor(6, TimeUnit.SECONDS).execute(() -> {
-                mc.execute(() -> {
-                    if (mc.player != null && mc.player.networkHandler != null) {
-                        linkingStatus = "Sending link command...";
-                        mc.player.networkHandler.sendChatCommand("link " + linkCodeRef[0]);
-                    } else {
-                        CompletableFuture.delayedExecutor(3, TimeUnit.SECONDS).execute(() -> {
-                            mc.execute(() -> {
-                                if (mc.player != null && mc.player.networkHandler != null) {
-                                    linkingStatus = "Sending link command...";
-                                    mc.player.networkHandler.sendChatCommand("link " + linkCodeRef[0]);
-                                }
-                            });
-                        });
-                    }
-                });
-            });
-
+            scheduleLinkCommand(mc, linkCode, 6);
         } catch (Exception e) {
             isLinking = false;
             linkingStatus = "";
         }
+    }
+
+    private void scheduleLinkCommand(net.minecraft.client.MinecraftClient mc, String linkCode, int delaySeconds) {
+        CompletableFuture.delayedExecutor(delaySeconds, TimeUnit.SECONDS).execute(() -> mc.execute(() -> {
+            if (mc.player != null && mc.player.networkHandler != null) {
+                linkingStatus = "Sending link command...";
+                mc.player.networkHandler.sendChatCommand("link " + linkCode);
+            } else if (delaySeconds == 6) {
+                scheduleLinkCommand(mc, linkCode, 3);
+            }
+        }));
     }
 
     private void completeLinking(String saveKey) {
@@ -342,196 +236,39 @@ public class AccountLinkingScreen extends Screen {
         currentFlowId = null;
 
         networkManager.setApiKey(saveKey);
+        ConfigManager.saveApiKey(saveKey);
 
-        try {
-            net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
-            File configDir = new File(mc.runDirectory, "config");
-            if (!configDir.exists()) configDir.mkdirs();
-            File configFile = new File(configDir, CONFIG_FILE);
-            JsonObject json = new JsonObject();
-            json.addProperty("encryptedApiToken", encrypt(saveKey));
-            try (FileWriter writer = new FileWriter(configFile)) {
-                new GsonBuilder().setPrettyPrinting().create().toJson(json, writer);
-            }
-        } catch (Exception e) {
-        }
-
-        net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+        var mc = net.minecraft.client.MinecraftClient.getInstance();
         mc.execute(() -> {
-            if (parent instanceof SaveManagerScreen) {
-                SaveManagerScreen sms = (SaveManagerScreen) parent;
-                mc.setScreen(sms);
-                sms.refresh();
+            SaveManagerScreen screen;
+            if (parent instanceof SaveManagerScreen sms) {
+                screen = sms;
             } else {
-                Screen targetParent = parent;
-                if (parent instanceof SelectWorldScreen) {
-                    targetParent = parent;
-                }
-                SaveManagerScreen screen = new SaveManagerScreen(targetParent);
-                mc.setScreen(screen);
-                screen.refresh();
+                screen = new SaveManagerScreen(parent instanceof SelectWorldScreen ? parent : parent);
             }
+            mc.setScreen(screen);
+            screen.refresh();
         });
     }
 
     private void runOnClient(Runnable r) {
-        if (client != null) {
-            client.execute(r);
-        }
-    }
-
-    private void clearConfigToken() {
-        try {
-            File configFile = new File(new File(client.runDirectory, "config"), CONFIG_FILE);
-            if (configFile.exists()) {
-                JsonObject json;
-                try (FileReader reader = new FileReader(configFile)) {
-                    json = new Gson().fromJson(reader, JsonObject.class);
-                }
-                if (json != null) {
-                    json.remove("encryptedApiToken");
-                    json.remove("apiToken");
-                    if (json.entrySet().isEmpty()) {
-                        configFile.delete();
-                    } else {
-                        try (FileWriter writer = new FileWriter(configFile)) {
-                            new GsonBuilder().setPrettyPrinting().create().toJson(json, writer);
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-        }
-    }
-
-    private void closeScreen() {
-        stopPolling();
-        if (client != null) {
-            String apiKey = loadApiKeyFromDisk();
-            if (parent instanceof SaveManagerScreen) {
-                if (apiKey != null && !apiKey.isBlank()) {
-                    client.setScreen(parent);
-                } else {
-                    Screen grandParent = ((SaveManagerScreen) parent).getParent();
-                    if (grandParent instanceof SelectWorldScreen) {
-                        client.setScreen(grandParent);
-                    } else {
-                        client.setScreen(new SelectWorldScreen(resolveRootParent(grandParent)));
-                    }
-                }
-            } else if (parent instanceof SelectWorldScreen) {
-                client.setScreen(parent);
-            } else {
-                client.setScreen(new SelectWorldScreen(resolveRootParent(parent)));
-            }
-        }
-    }
-
-    @Override
-    public void removed() {
-        super.removed();
-    }
-
-    @Override
-    public boolean shouldCloseOnEsc() {
-        return true;
-    }
-
-    @Override
-    public void close() {
-        goBack();
-    }
-
-    private String loadApiKeyFromDisk() {
-        try {
-            File configFile = new File(new File(client.runDirectory, "config"), CONFIG_FILE);
-            if (!configFile.exists()) return null;
-            try (FileReader reader = new FileReader(configFile)) {
-                JsonObject json = new Gson().fromJson(reader, JsonObject.class);
-                if (json == null) return null;
-                if (json.has("encryptedApiToken")) return decrypt(json.get("encryptedApiToken").getAsString());
-                if (json.has("apiToken")) return json.get("apiToken").getAsString();
-            }
-        } catch (Exception e) {
-            return null;
-        }
-        return null;
+        if (client != null) client.execute(r);
     }
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         super.render(context, mouseX, mouseY, delta);
-
         int cx = this.width / 2;
-
         context.drawCenteredTextWithShadow(textRenderer, title, cx, 10, 0xFFFFFFFF);
-
         if (!linkingStatus.isEmpty()) {
-            context.drawCenteredTextWithShadow(textRenderer, Text.literal(linkingStatus),
-                    cx, this.height / 2 + 30, 0xFF88FF88);
+            context.drawCenteredTextWithShadow(textRenderer, Text.literal(linkingStatus), cx, this.height / 2 + 30, 0xFF88FF88);
         }
-
         toastManager.render(context, delta, mouseX, mouseY);
     }
 
+    @Override
+    public boolean shouldCloseOnEsc() { return true; }
 
-    private static String extractErrorMessage(Throwable err) {
-        if (err == null) return "Unknown error";
-
-        Throwable cause = err;
-        while (cause.getCause() != null &&
-               (cause instanceof java.util.concurrent.CompletionException ||
-                cause instanceof java.util.concurrent.ExecutionException)) {
-            cause = cause.getCause();
-        }
-
-        String msg = cause.getMessage();
-        if (msg == null || msg.isBlank()) {
-            msg = cause.getClass().getSimpleName();
-        }
-
-        return msg;
-    }
-
-    private String encrypt(String input) throws Exception {
-        byte[] iv = new byte[IV_LEN];
-        RNG.nextBytes(iv);
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(AES_KEY, "AES"), new GCMParameterSpec(GCM_TAG_BITS, iv));
-        byte[] ct = cipher.doFinal(input.getBytes(StandardCharsets.UTF_8));
-        byte[] out = new byte[iv.length + ct.length];
-        System.arraycopy(iv, 0, out, 0, iv.length);
-        System.arraycopy(ct, 0, out, iv.length, ct.length);
-        return Base64.getEncoder().encodeToString(out);
-    }
-
-    private String decrypt(String base64) throws Exception {
-        byte[] data = Base64.getDecoder().decode(base64);
-        if (data.length < IV_LEN + 16) throw new IllegalArgumentException("Invalid data");
-        byte[] iv = new byte[IV_LEN];
-        byte[] ct = new byte[data.length - IV_LEN];
-        System.arraycopy(data, 0, iv, 0, IV_LEN);
-        System.arraycopy(data, IV_LEN, ct, 0, ct.length);
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(AES_KEY, "AES"), new GCMParameterSpec(GCM_TAG_BITS, iv));
-        return new String(cipher.doFinal(ct), StandardCharsets.UTF_8);
-    }
-
-    private static Screen resolveRootParent(Screen parent) {
-        Screen p = parent;
-        int guard = 0;
-        while (p instanceof SelectWorldScreen && guard++ < 8) {
-            try {
-                Field f = SelectWorldScreen.class.getDeclaredField("parent");
-                f.setAccessible(true);
-                Screen next = (Screen) f.get(p);
-                if (next == null || next == p) break;
-                p = next;
-            } catch (Throwable ignored) {
-                break;
-            }
-        }
-        return p;
-    }
+    @Override
+    public void close() { goBack(); }
 }
-
