@@ -25,7 +25,10 @@ public class AccountLinkingScreen extends Screen {
     private String pendingSaveKey = null;
     private boolean isLinking = false;
     private String linkingStatus = "";
+    private String pendingAuthUrl = null;
     private ScheduledExecutorService pollExecutor = null;
+    private CustomButton linkBtn = null;
+    private CustomButton copyUrlBtn = null;
 
     public AccountLinkingScreen(Screen parent) {
         super(Text.literal("Link Your Account"));
@@ -37,18 +40,23 @@ public class AccountLinkingScreen extends Screen {
     protected void init() {
         toastManager.initClient(client);
 
-        int btnSize = 20;
-        int margin = 6;
+        int btnSize = 20, margin = 6;
         addDrawableChild(new CustomButton(margin, margin, btnSize, btnSize, Text.literal("\u2190"), b -> goBack()));
 
         String apiKey = ConfigManager.loadApiKey();
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
-        int btnW = 100;
-        addDrawableChild(new CustomButton(
-                this.width / 2 - btnW / 2, this.height / 2, btnW, 20,
+        int cx = this.width / 2, btnW = 100;
+        int btnY = this.height / 2 - 10;
+        linkBtn = new CustomButton(cx - btnW / 2, btnY, btnW, 20,
                 Text.literal(hasKey ? "Reset" : "Link Account"),
-                b -> handleLinkOrReset(hasKey)));
+                b -> handleLinkOrReset(hasKey));
+        addDrawableChild(linkBtn);
+
+        copyUrlBtn = new CustomButton(cx - btnW / 2, btnY, btnW, 20,
+                Text.literal("Copy URL"), b -> copyAuthUrl());
+        copyUrlBtn.visible = false;
+        addDrawableChild(copyUrlBtn);
 
         if (hasKey) networkManager.setApiKey(apiKey);
     }
@@ -86,6 +94,13 @@ public class AccountLinkingScreen extends Screen {
         }
     }
 
+    private void copyAuthUrl() {
+        if (pendingAuthUrl != null && client.keyboard != null) {
+            client.keyboard.setClipboard(pendingAuthUrl);
+            toastManager.showSuccess("URL copied! Paste it in your browser.");
+        }
+    }
+
     private void startOAuthFlow() {
         if (isLinking) return;
         isLinking = true;
@@ -105,6 +120,9 @@ public class AccountLinkingScreen extends Screen {
                 }
                 String authUrl = networkManager.getOAuthAuthorizeUrl(currentFlowId);
                 runOnClient(() -> {
+                    pendingAuthUrl = authUrl;
+                    if (linkBtn != null) linkBtn.visible = false;
+                    if (copyUrlBtn != null) copyUrlBtn.visible = true;
                     linkingStatus = "Waiting for approval...";
                     try { net.minecraft.util.Util.getOperatingSystem().open(new java.net.URI(authUrl)); }
                     catch (Exception ignored) {}
@@ -259,10 +277,41 @@ public class AccountLinkingScreen extends Screen {
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         super.render(context, mouseX, mouseY, delta);
         int cx = this.width / 2;
+        int btnY = this.height / 2 - 10;
+
         context.drawCenteredTextWithShadow(textRenderer, title, cx, 10, 0xFFFFFFFF);
-        if (!linkingStatus.isEmpty()) {
-            context.drawCenteredTextWithShadow(textRenderer, Text.literal(linkingStatus), cx, this.height / 2 + 30, 0xFF88FF88);
+
+        String apiKey = ConfigManager.loadApiKey();
+        boolean hasKey = apiKey != null && !apiKey.isBlank();
+
+        if (hasKey && !isLinking) {
+            context.drawCenteredTextWithShadow(textRenderer,
+                    Text.literal("\u00a7aAccount linked \u2713"), cx, btnY - 20, 0xFFFFFFFF);
+            context.drawCenteredTextWithShadow(textRenderer,
+                    Text.literal("Reset to unlink and connect a different account."),
+                    cx, btnY + 30, 0xFF888888);
+        } else if (!isLinking) {
+            int stepY = btnY + 32;
+            int lineH = 12;
+            context.drawCenteredTextWithShadow(textRenderer, Text.literal("How it works:"), cx, stepY, 0xFF999999);
+            stepY += lineH + 4;
+            context.drawCenteredTextWithShadow(textRenderer, Text.literal("1. A browser window will open. Sign in and click Approve."), cx, stepY, 0xFFCCCCCC);
+            stepY += lineH;
+            context.drawCenteredTextWithShadow(textRenderer, Text.literal("2. The game will briefly join a server to verify your Minecraft account."), cx, stepY, 0xFFCCCCCC);
+            stepY += lineH;
+            context.drawCenteredTextWithShadow(textRenderer, Text.literal("3. Once verified, you're ready to sync your saves!"), cx, stepY, 0xFFCCCCCC);
+        } else {
+            if (!linkingStatus.isEmpty()) {
+                context.drawCenteredTextWithShadow(textRenderer,
+                        Text.literal(linkingStatus), cx, btnY - 20, 0xFF88FF88);
+            }
+            if (pendingAuthUrl != null) {
+                context.drawCenteredTextWithShadow(textRenderer,
+                        Text.literal("Browser didn't open? Copy the URL and paste it manually."),
+                        cx, btnY + 30, 0xFF888888);
+            }
         }
+
         toastManager.render(context, delta, mouseX, mouseY);
     }
 

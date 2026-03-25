@@ -87,13 +87,11 @@ public class Toast {
     public boolean render(DrawContext context, net.minecraft.client.font.TextRenderer textRenderer) {
         long now = System.currentTimeMillis();
 
-        // Calculate total paused time including current hover
         long totalPausedTime = pausedTime;
         if (hovered && hoverStartTime > 0) {
             totalPausedTime += (now - hoverStartTime);
         }
 
-        // Adjust elapsed time by subtracting paused time
         long elapsed = now - createdTime - totalPausedTime;
         long displayDuration = hasCopyButton ? ERROR_DISPLAY_DURATION : DISPLAY_DURATION;
 
@@ -197,7 +195,6 @@ public class Toast {
     public boolean isHovering(double mouseX, double mouseY) {
         long now = System.currentTimeMillis();
 
-        // Calculate total paused time including current hover
         long totalPausedTime = pausedTime;
         if (hovered && hoverStartTime > 0) {
             totalPausedTime += (now - hoverStartTime);

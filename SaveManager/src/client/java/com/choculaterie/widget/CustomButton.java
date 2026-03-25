@@ -37,7 +37,6 @@ public class CustomButton extends ButtonWidget {
         boolean isHovered = mouseX >= this.getX() && mouseY >= this.getY() &&
                 mouseX < this.getX() + this.getWidth() && mouseY < this.getY() + this.getHeight();
 
-        // Block hover if a toast is covering the button
         if (isHovered && toastManager != null && toastManager.isMouseOverToast(mouseX, mouseY)) {
             isHovered = false;
         }
