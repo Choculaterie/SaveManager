@@ -42,17 +42,6 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-	
-	// Mixin annotation processor with all dependencies
-	annotationProcessor(group: 'org.spongepowered', name: 'mixin', version: '0.8.7', classifier: 'processor')
-	// ASM is required by mixin annotation processor
-	annotationProcessor "org.ow2.asm:asm:9.7"
-	annotationProcessor "org.ow2.asm:asm-tree:9.7"
-	annotationProcessor "org.ow2.asm:asm-commons:9.7"
-	annotationProcessor "org.ow2.asm:asm-util:9.7"
-	annotationProcessor "org.ow2.asm:asm-analysis:9.7"
-	annotationProcessor "com.google.guava:guava:33.0.0-jre"
-	annotationProcessor "com.google.code.gson:gson:2.11.0"
 }
 
 processResources {

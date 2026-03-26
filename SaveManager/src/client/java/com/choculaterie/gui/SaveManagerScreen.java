@@ -1,9 +1,11 @@
 package com.choculaterie.gui;
 
 import com.choculaterie.SaveManagerMod;
+import com.choculaterie.mixin.SelectWorldScreenAccessor;
 import com.choculaterie.network.NetworkManager;
 import com.choculaterie.util.ConfigManager;
 import com.choculaterie.util.ScreenUtils;
+import com.choculaterie.util.WatchManager;
 import com.choculaterie.widget.ConfirmPopup;
 import com.choculaterie.widget.CustomButton;
 import com.choculaterie.widget.LoadingSpinner;
@@ -14,6 +16,8 @@ import com.google.gson.JsonObject;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.world.SelectWorldScreen;
+import net.minecraft.client.gui.tooltip.HoveredTooltipPositioner;
+import net.minecraft.client.gui.tooltip.TooltipComponent;
 import net.minecraft.text.Text;
 
 import java.nio.file.*;
@@ -53,6 +57,9 @@ public class SaveManagerScreen extends Screen {
     private long quotaBytes = 5L * 1024L * 1024L * 1024L;
     private boolean quotaLoading = false;
     private static final TransferState ACTIVE = new TransferState();
+    private String autoUploadWorld = null;
+    private boolean closed = false;
+    private String starTooltipText = null;
 
     private static final class TransferState {
         volatile boolean dlActive, upActive, zipping, unzipping;
@@ -88,6 +95,11 @@ public class SaveManagerScreen extends Screen {
         this.spinner = new LoadingSpinner(0, 0);
     }
 
+    public SaveManagerScreen(Screen parent, String autoUploadWorld) {
+        this(parent);
+        this.autoUploadWorld = autoUploadWorld;
+    }
+
     @Override
     protected void init() {
         toastManager.initClient(client);
@@ -101,14 +113,15 @@ public class SaveManagerScreen extends Screen {
         int panelW = (totalW - PANEL_GAP) / 2;
         localPanelX = 30; localPanelW = panelW;
         cloudPanelX = localPanelX + panelW + PANEL_GAP; cloudPanelW = panelW;
+
+        int btnW = 80, actionBtnY = this.height - 28;
+        uploadBtn = addBtn(localPanelX + (localPanelW - btnW) / 2, actionBtnY, btnW, 20, "Upload", b -> onUpload());
+        downloadBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2, actionBtnY, btnW, 20, "Download", b -> onDownload());
+        deleteBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2 + btnW + 10, actionBtnY, btnW, 20, "Delete", b -> onDelete());
+
         listY = 70; listH = VISIBLE_ROWS * ROW_HEIGHT;
         localScrollBar = new ScrollBar(localPanelX + localPanelW + 4, listY, listH);
         cloudScrollBar = new ScrollBar(cloudPanelX + cloudPanelW + 4, listY, listH);
-
-        int bottomY = this.height - 28, btnW = 80;
-        uploadBtn = addBtn(localPanelX + (localPanelW - btnW) / 2, bottomY, btnW, 20, "Upload", b -> onUpload());
-        downloadBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2, bottomY, btnW, 20, "Download", b -> onDownload());
-        deleteBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2 + btnW + 10, bottomY, btnW, 20, "Delete", b -> onDelete());
 
         String apiKey = ConfigManager.loadApiKey();
         if (apiKey == null || apiKey.isBlank()) {
@@ -119,15 +132,15 @@ public class SaveManagerScreen extends Screen {
         quotaFormatted = cachedQuotaFormatted;
         quotaBytes = parseQuotaBytes(cachedQuotaFormatted);
 
-        boolean shouldReload = (System.currentTimeMillis() - lastLoadTimeMs) > RELOAD_THRESHOLD_MS || cachedLocalSaves.isEmpty();
-        if (shouldReload) {
+        boolean shouldReloadCloud = (System.currentTimeMillis() - lastLoadTimeMs) > RELOAD_THRESHOLD_MS || cachedCloudSaves.isEmpty();
+        fetchLocalSaves();
+        if (shouldReloadCloud) {
             quotaLoading = true;
-            fetchLocalSaves(); fetchCloudSaves(); fetchQuotaInfo();
+            fetchCloudSaves(); fetchQuotaInfo();
         } else {
             quotaLoading = false;
-            localSaves.addAll(cachedLocalSaves);
-            cloudSaves.addAll(cachedCloudSaves);
-            localLoading = false; cloudLoading = false;
+            cloudSaves.clear(); cloudSaves.addAll(cachedCloudSaves);
+            cloudLoading = false;
         }
     }
 
@@ -170,6 +183,7 @@ public class SaveManagerScreen extends Screen {
                 cachedLocalSaves.clear(); cachedLocalSaves.addAll(tmp);
                 lastLoadTimeMs = System.currentTimeMillis();
                 localScrollOffset = 0; localSelectedIndex = -1; localLoading = false;
+                triggerAutoUpload();
             });
         });
     }
@@ -289,6 +303,10 @@ public class SaveManagerScreen extends Screen {
                     toastManager.showError(msg);
                 } else {
                     toastManager.showSuccess("Upload complete: " + worldName);
+                    LocalSave uploaded = localSaves.stream()
+                            .filter(s -> s.worldName.equals(worldName)).findFirst().orElse(null);
+                    if (uploaded != null) WatchManager.updateLastKnown(worldName, uploaded.dir);
+                    WatchManager.clearPendingNotification(worldName);
                     fetchLocalSaves(); fetchCloudSaves();
                 }
             }));
@@ -398,6 +416,18 @@ public class SaveManagerScreen extends Screen {
         }, "SaveManager-delete").start();
     }
 
+    private void triggerAutoUpload() {
+        if (autoUploadWorld == null) return;
+        for (int i = 0; i < localSaves.size(); i++) {
+            if (localSaves.get(i).worldName.equals(autoUploadWorld)) {
+                localSelectedIndex = i;
+                autoUploadWorld = null;
+                onUpload();
+                return;
+            }
+        }
+    }
+
     // ── Rendering ──
 
     @Override
@@ -412,11 +442,17 @@ public class SaveManagerScreen extends Screen {
 
         ctx.drawTextWithShadow(textRenderer, Text.literal("Local Saves"), localPanelX, 50, 0xFFFFFFFF);
         ctx.drawTextWithShadow(textRenderer, Text.literal("Cloud Saves"), cloudPanelX, 50, 0xFFFFFFFF);
+        starTooltipText = null;
         renderSavePanel(ctx, mouseX, mouseY, delta, true);
         renderSavePanel(ctx, mouseX, mouseY, delta, false);
+        if (starTooltipText != null) {
+            ctx.drawTooltipImmediately(textRenderer, List.of(
+                    TooltipComponent.of(Text.literal(starTooltipText).asOrderedText())
+            ), mouseX, mouseY, HoveredTooltipPositioner.INSTANCE, null);
+        }
 
         if (ACTIVE.isActive()) {
-            int statusY = this.height - 70;
+            int statusY = listY + listH + 10;
             if (ACTIVE.zipping || ACTIVE.unzipping || ACTIVE.bytes <= 0L) {
                 spinner.setPosition(cx - 16, statusY);
                 spinner.render(ctx, mouseX, mouseY, delta);
@@ -426,11 +462,16 @@ public class SaveManagerScreen extends Screen {
                 renderProgressBar(ctx, cx, statusY);
             }
         } else if (localLoading || cloudLoading) {
-            int statusY = this.height - 70;
+            int statusY = listY + listH + 10;
             spinner.setPosition(cx - 16, statusY);
             spinner.render(ctx, mouseX, mouseY, delta);
             ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Loading..."), cx, statusY + 40, 0xFFFFFFFF);
         }
+
+        // Re-render action buttons on top of panels so they're always clickable
+        uploadBtn.render(ctx, mouseX, mouseY, delta);
+        downloadBtn.render(ctx, mouseX, mouseY, delta);
+        deleteBtn.render(ctx, mouseX, mouseY, delta);
 
         toastManager.render(ctx, delta, mouseX, mouseY);
         if (confirmPopup != null) confirmPopup.render(ctx, mouseX, mouseY, delta);
@@ -467,6 +508,12 @@ public class SaveManagerScreen extends Screen {
                 LocalSave s = (LocalSave) saves.get(i);
                 worldName = s.worldName;
                 info = formatBytes(s.sizeBytes) + " \u2022 " + shortDateMillis(s.lastModified);
+                boolean watching = WatchManager.isWatching(worldName);
+                int starColor = watching ? 0xFFFFDD44 : 0xFF383838;
+                int starX = panelX + panelW - 12, starY = ry + 7;
+                ctx.drawTextWithShadow(textRenderer, Text.literal("\u2605"), starX, starY, starColor);
+                if (mouseX >= starX - 1 && mouseX < starX + 8 && mouseY >= starY && mouseY < starY + 9)
+                    starTooltipText = watching ? "Remove from favorite" : "Add to favorite";
             } else {
                 CloudSave s = (CloudSave) saves.get(i);
                 worldName = s.worldName;
@@ -519,7 +566,16 @@ public class SaveManagerScreen extends Screen {
 
         if (click.button() == 0 && !localLoading && !cloudLoading && !ACTIVE.dlActive && !ACTIVE.upActive) {
             int idx = clickedRowIndex(mx, my, localPanelX, localPanelW, localScrollOffset, localSaves.size());
-            if (idx >= 0) { localSelectedIndex = idx; cloudSelectedIndex = -1; return true; }
+            if (idx >= 0) {
+                int starX = localPanelX + localPanelW - 14;
+                if (mx >= starX && mx < starX + 14) {
+                    LocalSave s = localSaves.get(idx);
+                    boolean nowWatching = !WatchManager.isWatching(s.worldName);
+                    WatchManager.setWatching(s.worldName, s.dir, nowWatching);
+                    return true;
+                }
+                localSelectedIndex = idx; cloudSelectedIndex = -1; return true;
+            }
             idx = clickedRowIndex(mx, my, cloudPanelX, cloudPanelW, cloudScrollOffset, cloudSaves.size());
             if (idx >= 0) { cloudSelectedIndex = idx; localSelectedIndex = -1; return true; }
         }
@@ -557,16 +613,33 @@ public class SaveManagerScreen extends Screen {
 
     @Override
     public void close() {
-        if (confirmPopup != null) confirmPopup = null;
-        else closeScreen();
+        if (confirmPopup != null) {
+            confirmPopup = null;
+            localLoading = false;
+            cloudLoading = false;
+        } else {
+            closeScreen();
+        }
     }
 
     // ── Navigation & utilities ──
 
     private void closeScreen() {
         if (client == null) return;
-        if (parent instanceof SelectWorldScreen) client.setScreen(parent);
-        else client.setScreen(new SelectWorldScreen(ScreenUtils.resolveRootParent(parent)));
+        closed = true;
+        autoUploadWorld = null;
+        ACTIVE.upActive = false;
+        ACTIVE.dlActive = false;
+        ACTIVE.zipping = false;
+        ACTIVE.unzipping = false;
+        Screen dest;
+        if (parent instanceof SelectWorldScreen) {
+            Screen grandParent = ((SelectWorldScreenAccessor) parent).getParentScreen();
+            dest = new SelectWorldScreen(grandParent);
+        } else {
+            dest = new SelectWorldScreen(ScreenUtils.resolveRootParent(parent));
+        }
+        client.setScreen(dest);
     }
 
     private void openSavesFolder() {
@@ -580,7 +653,7 @@ public class SaveManagerScreen extends Screen {
         }
     }
 
-    private void runOnClient(Runnable r) { if (client != null) client.execute(r); }
+    private void runOnClient(Runnable r) { if (client != null) client.execute(() -> { if (!closed) r.run(); }); }
 
     private String computeQuotaLine() {
         long used = cloudSaves.stream().mapToLong(s -> Math.max(0L, s.fileSizeBytes)).sum();

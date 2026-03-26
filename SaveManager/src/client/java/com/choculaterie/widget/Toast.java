@@ -122,7 +122,7 @@ public class Toast {
         int currentX = (int) (startX + (targetX - startX) * slideProgress);
 
         if (wrappedLines == null) {
-            int maxTextWidth = TOAST_WIDTH - 40;
+            int maxTextWidth = TOAST_WIDTH - 60;
             wrappedLines = wrapText(textRenderer, message, maxTextWidth);
             int baseHeight = hasCopyButton ? TOAST_HEIGHT_WITH_BUTTON : TOAST_HEIGHT;
             int textHeight = Math.max(1, wrappedLines.size() - 1) * LINE_HEIGHT;
@@ -169,7 +169,8 @@ public class Toast {
             closeButton.setY(closeButtonY);
             closeButton.setWidth(16);
             closeButton.setHeight(16);
-            closeButton.render(context, (int) mouseX, (int) mouseY, 0);
+            int closeColor = (alpha << 24) | 0x00AAAAAA;
+            context.drawText(textRenderer, "\u00D7", closeButtonX + 4, closeButtonY + 4, closeColor, false);
         }
 
         if (hasCopyButton && copyButton != null) {
