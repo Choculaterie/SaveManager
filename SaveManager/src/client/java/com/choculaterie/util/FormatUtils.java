@@ -2,7 +2,7 @@ package com.choculaterie.util;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import net.minecraft.client.font.TextRenderer;
+import net.minecraft.client.gui.Font;
 
 import java.time.Instant;
 import java.time.ZoneId;
@@ -86,7 +86,7 @@ public final class FormatUtils {
         return msg;
     }
 
-    public static List<String> wrapText(TextRenderer textRenderer, String text, int maxWidth) {
+    public static List<String> wrapText(Font textRenderer, String text, int maxWidth) {
         List<String> lines = new ArrayList<>();
         for (String paragraph : text.split("\n")) {
             if (paragraph.isEmpty()) {
@@ -96,7 +96,7 @@ public final class FormatUtils {
             StringBuilder currentLine = new StringBuilder();
             for (String word : paragraph.split(" ")) {
                 String testLine = currentLine.isEmpty() ? word : currentLine + " " + word;
-                if (textRenderer.getWidth(testLine) <= maxWidth) {
+                if (textRenderer.width(testLine) <= maxWidth) {
                     if (!currentLine.isEmpty()) currentLine.append(" ");
                     currentLine.append(word);
                 } else {

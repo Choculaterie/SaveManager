@@ -3,7 +3,7 @@ package com.choculaterie.util;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 
 import java.io.File;
 import java.io.FileReader;
@@ -16,7 +16,7 @@ public final class ConfigManager {
     private ConfigManager() {}
 
     private static File getConfigFile() {
-        return new File(new File(MinecraftClient.getInstance().runDirectory, "config"), CONFIG_FILE);
+        return new File(new File(Minecraft.getInstance().gameDirectory, "config"), CONFIG_FILE);
     }
 
     public static String loadApiKey() {

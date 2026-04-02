@@ -1,7 +1,7 @@
 package com.choculaterie.widget;
 
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.text.Text;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.network.chat.Component;
 
 public class Toast {
     public enum Type {
@@ -67,13 +67,13 @@ public class Toast {
         this.hasCopyButton = hasCopyButton;
         this.copyText = copyText != null ? copyText : message;
         this.hintText = hintText;
-        closeButton = new CustomButton(0, 0, 16, 16, Text.of("×"), btn -> {});
+        closeButton = new CustomButton(0, 0, 16, 16, Component.literal("×"), btn -> {});
         if (hasCopyButton) {
-            copyButton = new CustomButton(0, 0, 50, 18, Text.of("Copy"), btn -> {});
+            copyButton = new CustomButton(0, 0, 50, 18, Component.literal("Copy"), btn -> {});
         }
     }
 
-    private java.util.List<String> wrapText(net.minecraft.client.font.TextRenderer textRenderer, String text, int maxWidth) {
+    private java.util.List<String> wrapText(net.minecraft.client.gui.Font textRenderer, String text, int maxWidth) {
         return com.choculaterie.util.FormatUtils.wrapText(textRenderer, text, maxWidth);
     }
 
@@ -84,7 +84,7 @@ public class Toast {
         }
     }
 
-    public boolean render(DrawContext context, net.minecraft.client.font.TextRenderer textRenderer) {
+    public boolean render(GuiGraphicsExtractor context, net.minecraft.client.gui.Font textRenderer) {
         long now = System.currentTimeMillis();
 
         long totalPausedTime = pausedTime;
@@ -152,14 +152,14 @@ public class Toast {
         };
 
         int iconColorWithAlpha = (alpha << 24) | (type.color & 0x00FFFFFF);
-        context.drawText(textRenderer, icon, currentX + 12, yPosition + 8, iconColorWithAlpha, false);
+        context.text(textRenderer, icon, currentX + 12, yPosition + 8, iconColorWithAlpha, false);
 
         int textX = currentX + 28;
         int textY = yPosition + 8;
         int textColorWithAlpha = (alpha << 24) | 0x00FFFFFF;
 
         for (int i = 0; i < wrappedLines.size(); i++) {
-            context.drawText(textRenderer, wrappedLines.get(i), textX, textY + (i * LINE_HEIGHT), textColorWithAlpha, false);
+            context.text(textRenderer, wrappedLines.get(i), textX, textY + (i * LINE_HEIGHT), textColorWithAlpha, false);
         }
 
         if (closeButton != null) {
@@ -170,7 +170,7 @@ public class Toast {
             closeButton.setWidth(16);
             closeButton.setHeight(16);
             int closeColor = (alpha << 24) | 0x00AAAAAA;
-            context.drawText(textRenderer, "\u00D7", closeButtonX + 4, closeButtonY + 4, closeColor, false);
+            context.text(textRenderer, "\u00D7", closeButtonX + 4, closeButtonY + 4, closeColor, false);
         }
 
         if (hasCopyButton && copyButton != null) {
@@ -180,14 +180,14 @@ public class Toast {
             copyButton.setY(buttonY);
             copyButton.setWidth(50);
             copyButton.setHeight(18);
-            copyButton.render(context, (int) mouseX, (int) mouseY, 0);
+            copyButton.extractRenderState(context, (int) mouseX, (int) mouseY, 0);
         }
 
         if (hintText != null && !hintText.isEmpty()) {
             int hintX = currentX + 10;
             int hintY = yPosition + toastHeight - 11;
             int hintColorWithAlpha = (alpha << 24) | 0x00AAAAAA;
-            context.drawText(textRenderer, hintText, hintX, hintY, hintColorWithAlpha, false);
+            context.text(textRenderer, hintText, hintX, hintY, hintColorWithAlpha, false);
         }
 
         return false;

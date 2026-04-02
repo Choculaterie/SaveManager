@@ -1,11 +1,12 @@
 package com.choculaterie.widget;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.font.TextRenderer;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.network.chat.Component;
 
-public class CustomButton extends ButtonWidget {
+public class CustomButton extends Button {
     private static final int BUTTON_COLOR = 0xFF3A3A3A;
     private static final int BUTTON_HOVER_COLOR = 0xFF4A4A4A;
     private static final int BUTTON_DISABLED_COLOR = 0xFF2A2A2A;
@@ -16,8 +17,8 @@ public class CustomButton extends ButtonWidget {
     private boolean renderAsDownloadIcon = false;
     private ToastManager toastManager = null;
 
-    public CustomButton(int x, int y, int width, int height, net.minecraft.text.Text message, PressAction onPress) {
-        super(x, y, width, height, message, onPress, DEFAULT_NARRATION_SUPPLIER);
+    public CustomButton(int x, int y, int width, int height, Component message, OnPress onPress) {
+        super(x, y, width, height, message, onPress, DEFAULT_NARRATION);
     }
 
     public void setToastManager(ToastManager toastManager) {
@@ -33,7 +34,7 @@ public class CustomButton extends ButtonWidget {
     }
 
     @Override
-    protected void drawIcon(DrawContext context, int mouseX, int mouseY, float delta) {
+    protected void extractContents(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
         boolean isHovered = mouseX >= this.getX() && mouseY >= this.getY() &&
                 mouseX < this.getX() + this.getWidth() && mouseY < this.getY() + this.getHeight();
 
@@ -41,7 +42,7 @@ public class CustomButton extends ButtonWidget {
             isHovered = false;
         }
 
-        int color = !this.active ? BUTTON_DISABLED_COLOR : isHovered ? BUTTON_HOVER_COLOR : BUTTON_COLOR;
+        int color = !this.isActive() ? BUTTON_DISABLED_COLOR : isHovered ? BUTTON_HOVER_COLOR : BUTTON_COLOR;
 
         context.fill(this.getX(), this.getY(), this.getX() + this.getWidth(), this.getY() + this.getHeight(), color);
         context.fill(this.getX(), this.getY(), this.getX() + this.getWidth(), this.getY() + 1, 0xFF555555);
@@ -49,13 +50,13 @@ public class CustomButton extends ButtonWidget {
         context.fill(this.getX(), this.getY(), this.getX() + 1, this.getY() + this.getHeight(), 0xFF555555);
         context.fill(this.getX() + this.getWidth() - 1, this.getY(), this.getX() + this.getWidth(), this.getY() + this.getHeight(), 0xFF555555);
 
-        TextRenderer tr = MinecraftClient.getInstance().textRenderer;
-        int textColor = this.active ? TEXT_COLOR : TEXT_DISABLED_COLOR;
+        Font tr = Minecraft.getInstance().font;
+        int textColor = this.isActive() ? TEXT_COLOR : TEXT_DISABLED_COLOR;
         String messageText = this.getMessage().getString();
         int yOffset = (messageText.equals("⚙") || messageText.equals("🔄")) ? 0 : 1;
         String displayText = renderAsXIcon ? "✕" : renderAsDownloadIcon ? "💾" : messageText;
 
-        context.drawCenteredTextWithShadow(tr, displayText, this.getX() + this.getWidth() / 2,
+        context.centeredText(tr, displayText, this.getX() + this.getWidth() / 2,
                 this.getY() + (this.getHeight() - 8) / 2 + yOffset, textColor);
     }
 }

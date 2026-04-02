@@ -1,16 +1,16 @@
 package com.choculaterie.mixin;
 
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.world.SelectWorldScreen;
-import net.minecraft.client.gui.screen.world.WorldListWidget;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
+import net.minecraft.client.gui.screens.worldselection.WorldSelectionList;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
 @Mixin(SelectWorldScreen.class)
 public interface SelectWorldScreenAccessor {
-    @Accessor("levelList")
-    WorldListWidget getLevelList();
+    @Accessor("list")
+    WorldSelectionList getLevelList();
 
-    @Accessor("parent")
+    @Accessor("lastScreen")
     Screen getParentScreen();
 }

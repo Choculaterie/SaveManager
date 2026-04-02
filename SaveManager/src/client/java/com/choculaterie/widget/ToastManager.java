@@ -1,7 +1,7 @@
 package com.choculaterie.widget;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -9,14 +9,14 @@ import java.util.List;
 
 public class ToastManager {
     private final List<Toast> toasts = new ArrayList<>();
-    private MinecraftClient client;
+    private Minecraft client;
     private static final int TOP_PADDING = 10;
 
-    public ToastManager(MinecraftClient client) {
+    public ToastManager(Minecraft client) {
         this.client = client;
     }
 
-    public void initClient(MinecraftClient client) {
+    public void initClient(Minecraft client) {
         this.client = client;
     }
 
@@ -30,8 +30,8 @@ public class ToastManager {
 
     public void showToast(String message, Toast.Type type, boolean hasCopyButton, String copyText, String hintText) {
         if (client.getWindow() == null) return;
-        int screenWidth = client.getWindow().getScaledWidth();
-        int screenHeight = client.getWindow().getScaledHeight();
+        int screenWidth = client.getWindow().getGuiScaledWidth();
+        int screenHeight = client.getWindow().getGuiScaledHeight();
         int yPosition = TOP_PADDING;
         for (Toast toast : toasts) {
             yPosition += toast.getHeight();
@@ -72,7 +72,7 @@ public class ToastManager {
         showToast(message, Toast.Type.WARNING);
     }
 
-    public void render(DrawContext context, float delta, int mouseX, int mouseY) {
+    public void render(GuiGraphicsExtractor context, float delta, int mouseX, int mouseY) {
         if (toasts.isEmpty()) return;
         Toast.updateMousePosition(mouseX, mouseY);
         Iterator<Toast> iterator = toasts.iterator();
@@ -80,7 +80,7 @@ public class ToastManager {
         while (iterator.hasNext()) {
             Toast toast = iterator.next();
             toast.setHovered(toast.isHovering(mouseX, mouseY));
-            boolean shouldRemove = toast.render(context, client.textRenderer);
+            boolean shouldRemove = toast.render(context, client.font);
             if (shouldRemove) {
                 iterator.remove();
                 toastRemoved = true;
@@ -112,7 +112,7 @@ public class ToastManager {
         return false;
     }
 
-    public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean consumed) {
+    public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent click, boolean consumed) {
         if (consumed) {
             return false;
         }
@@ -126,8 +126,8 @@ public class ToastManager {
             }
             if (toast.isCopyButtonClicked(mouseX, mouseY)) {
                 String textToCopy = toast.getCopyText();
-                if (client.keyboard != null) {
-                    client.keyboard.setClipboard(textToCopy);
+                if (client.keyboardHandler != null) {
+                    client.keyboardHandler.setClipboard(textToCopy);
                     showSuccess("Error copied to clipboard!");
                     return true;
                 }

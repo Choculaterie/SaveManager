@@ -1,10 +1,10 @@
 package com.choculaterie.widget;
 
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.Drawable;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Renderable;
 import org.lwjgl.glfw.GLFW;
 
-public class ScrollBar implements Drawable {
+public class ScrollBar implements Renderable {
     private static final int SCROLLBAR_WIDTH = 6;
     private static final int SCROLLBAR_COLOR = 0xFF555555;
     private static final int SCROLLBAR_HANDLE_COLOR = 0xFF888888;
@@ -49,7 +49,7 @@ public class ScrollBar implements Drawable {
         return isDragging;
     }
 
-    public boolean updateAndRender(DrawContext context, int mouseX, int mouseY, float delta, long windowHandle) {
+    public boolean updateAndRender(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta, long windowHandle) {
         if (!isVisible()) return false;
 
         boolean isMouseDown = GLFW.glfwGetMouseButton(windowHandle, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
@@ -107,7 +107,7 @@ public class ScrollBar implements Drawable {
     }
 
     @Override
-    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+    public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
         if (!isVisible()) return;
         context.fill(x, y, x + SCROLLBAR_WIDTH, y + height, SCROLLBAR_COLOR);
         double handleHeight = Math.max(20, (visibleHeight / contentHeight) * height);

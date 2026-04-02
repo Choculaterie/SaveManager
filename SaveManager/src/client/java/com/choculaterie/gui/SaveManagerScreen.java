@@ -13,12 +13,12 @@ import com.choculaterie.widget.ScrollBar;
 import com.choculaterie.widget.ToastManager;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.world.SelectWorldScreen;
-import net.minecraft.client.gui.tooltip.HoveredTooltipPositioner;
-import net.minecraft.client.gui.tooltip.TooltipComponent;
-import net.minecraft.text.Text;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
+
+
+import net.minecraft.network.chat.Component;
 
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -89,7 +89,7 @@ public class SaveManagerScreen extends Screen {
     }
 
     public SaveManagerScreen(Screen parent) {
-        super(Text.literal("Save Manager"));
+        super(Component.literal("Save Manager"));
         this.parent = parent;
         this.toastManager = new ToastManager(null);
         this.spinner = new LoadingSpinner(0, 0);
@@ -102,12 +102,12 @@ public class SaveManagerScreen extends Screen {
 
     @Override
     protected void init() {
-        toastManager.initClient(client);
+        toastManager.initClient(minecraft);
         int btnSize = 20, margin = 6;
         addBtn(margin, margin, btnSize, btnSize, "\u2190", b -> closeScreen());
         refreshBtn = addBtn(margin + btnSize + 5, margin, btnSize, btnSize, "\uD83D\uDD04", b -> refresh());
         addBtn(this.width - margin - btnSize * 2 - 5, margin, btnSize, btnSize, "\uD83D\uDCC1", b -> openSavesFolder());
-        addBtn(this.width - margin - btnSize, margin, btnSize, btnSize, "\u2699", b -> client.setScreen(new AccountLinkingScreen(this)));
+        addBtn(this.width - margin - btnSize, margin, btnSize, btnSize, "\u2699", b -> minecraft.setScreen(new AccountLinkingScreen(this)));
 
         int totalW = this.width - 60;
         int panelW = (totalW - PANEL_GAP) / 2;
@@ -125,7 +125,7 @@ public class SaveManagerScreen extends Screen {
 
         String apiKey = ConfigManager.loadApiKey();
         if (apiKey == null || apiKey.isBlank()) {
-            client.setScreen(new AccountLinkingScreen(this));
+            minecraft.setScreen(new AccountLinkingScreen(this));
             return;
         }
         networkManager.setApiKey(apiKey);
@@ -144,10 +144,10 @@ public class SaveManagerScreen extends Screen {
         }
     }
 
-    private CustomButton addBtn(int x, int y, int w, int h, String label, CustomButton.PressAction onPress) {
-        CustomButton btn = new CustomButton(x, y, w, h, Text.literal(label), onPress);
+    private CustomButton addBtn(int x, int y, int w, int h, String label, CustomButton.OnPress onPress) {
+        CustomButton btn = new CustomButton(x, y, w, h, Component.literal(label), onPress);
         btn.setToastManager(toastManager);
-        addDrawableChild(btn);
+        addRenderableWidget(btn);
         return btn;
     }
 
@@ -166,7 +166,7 @@ public class SaveManagerScreen extends Screen {
         CompletableFuture.runAsync(() -> {
             List<LocalSave> tmp = new ArrayList<>();
             try {
-                Path savesDir = client.runDirectory.toPath().resolve("saves");
+                Path savesDir = minecraft.gameDirectory.toPath().resolve("saves");
                 if (Files.exists(savesDir) && Files.isDirectory(savesDir)) {
                     try (DirectoryStream<Path> ds = Files.newDirectoryStream(savesDir)) {
                         for (Path p : ds) {
@@ -251,12 +251,12 @@ public class SaveManagerScreen extends Screen {
     private void onUpload() {
         if (localSelectedIndex < 0 || localSelectedIndex >= localSaves.size()) return;
         if (networkManager.getApiKey() == null || networkManager.getApiKey().isBlank()) {
-            client.setScreen(new AccountLinkingScreen(this)); return;
+            minecraft.setScreen(new AccountLinkingScreen(this)); return;
         }
         LocalSave s = localSaves.get(localSelectedIndex);
         localLoading = true;
         networkManager.listWorldSaveNames().whenComplete((names, err) -> runOnClient(() -> {
-            if (err != null) { localLoading = false; client.setScreen(new AccountLinkingScreen(this)); return; }
+            if (err != null) { localLoading = false; minecraft.setScreen(new AccountLinkingScreen(this)); return; }
             String sanitized = sanitizeFolderName(s.worldName);
             boolean exists = names != null && names.stream().anyMatch(n ->
                     n != null && (n.equalsIgnoreCase(s.worldName) || (!sanitized.isEmpty() && n.equalsIgnoreCase(sanitized))));
@@ -320,7 +320,7 @@ public class SaveManagerScreen extends Screen {
     private void onDownload() {
         if (cloudSelectedIndex < 0 || cloudSelectedIndex >= cloudSaves.size()) return;
         CloudSave s = cloudSaves.get(cloudSelectedIndex);
-        Path savesDir = client.runDirectory.toPath().resolve("saves");
+        Path savesDir = minecraft.gameDirectory.toPath().resolve("saves");
         try { Files.createDirectories(savesDir); } catch (Exception ignored) {}
 
         String baseName = sanitizeFolderName(s.worldName);
@@ -431,53 +431,51 @@ public class SaveManagerScreen extends Screen {
     // ── Rendering ──
 
     @Override
-    public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
-        super.render(ctx, mouseX, mouseY, delta);
+    public void extractRenderState(GuiGraphicsExtractor ctx, int mouseX, int mouseY, float delta) {
+        super.extractRenderState(ctx, mouseX, mouseY, delta);
         updateButtonStates();
         int cx = this.width / 2;
-        ctx.drawCenteredTextWithShadow(textRenderer, title, cx, 10, 0xFFFFFFFF);
+        ctx.centeredText(font, title, cx, 10, 0xFFFFFFFF);
 
         if (quotaLoading) renderTinySpinner(ctx, cx, 28, delta);
-        else ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(computeQuotaLine()), cx, 22, 0xFFAAAAAA);
+        else ctx.centeredText(font, Component.literal(computeQuotaLine()), cx, 22, 0xFFAAAAAA);
 
-        ctx.drawTextWithShadow(textRenderer, Text.literal("Local Saves"), localPanelX, 50, 0xFFFFFFFF);
-        ctx.drawTextWithShadow(textRenderer, Text.literal("Cloud Saves"), cloudPanelX, 50, 0xFFFFFFFF);
+        ctx.text(font, Component.literal("Local Saves"), localPanelX, 50, 0xFFFFFFFF);
+        ctx.text(font, Component.literal("Cloud Saves"), cloudPanelX, 50, 0xFFFFFFFF);
         starTooltipText = null;
         renderSavePanel(ctx, mouseX, mouseY, delta, true);
         renderSavePanel(ctx, mouseX, mouseY, delta, false);
         if (starTooltipText != null) {
-            ctx.drawTooltipImmediately(textRenderer, List.of(
-                    TooltipComponent.of(Text.literal(starTooltipText).asOrderedText())
-            ), mouseX, mouseY, HoveredTooltipPositioner.INSTANCE, null);
+            ctx.setTooltipForNextFrame(Component.literal(starTooltipText), mouseX, mouseY);
         }
 
         if (ACTIVE.isActive()) {
             int statusY = listY + listH + 10;
             if (ACTIVE.zipping || ACTIVE.unzipping || ACTIVE.bytes <= 0L) {
                 spinner.setPosition(cx - 16, statusY);
-                spinner.render(ctx, mouseX, mouseY, delta);
+                spinner.extractRenderState(ctx, mouseX, mouseY, delta);
                 String msg = ACTIVE.zipping ? "Zipping..." : ACTIVE.unzipping ? "Unzipping..." : "Preparing...";
-                ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(msg), cx, statusY + 40, 0xFFFFFFFF);
+                ctx.centeredText(font, Component.literal(msg), cx, statusY + 40, 0xFFFFFFFF);
             } else {
                 renderProgressBar(ctx, cx, statusY);
             }
         } else if (localLoading || cloudLoading) {
             int statusY = listY + listH + 10;
             spinner.setPosition(cx - 16, statusY);
-            spinner.render(ctx, mouseX, mouseY, delta);
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Loading..."), cx, statusY + 40, 0xFFFFFFFF);
+            spinner.extractRenderState(ctx, mouseX, mouseY, delta);
+            ctx.centeredText(font, Component.literal("Loading..."), cx, statusY + 40, 0xFFFFFFFF);
         }
 
         // Re-render action buttons on top of panels so they're always clickable
-        uploadBtn.render(ctx, mouseX, mouseY, delta);
-        downloadBtn.render(ctx, mouseX, mouseY, delta);
-        deleteBtn.render(ctx, mouseX, mouseY, delta);
+        uploadBtn.extractRenderState(ctx, mouseX, mouseY, delta);
+        downloadBtn.extractRenderState(ctx, mouseX, mouseY, delta);
+        deleteBtn.extractRenderState(ctx, mouseX, mouseY, delta);
 
         toastManager.render(ctx, delta, mouseX, mouseY);
-        if (confirmPopup != null) confirmPopup.render(ctx, mouseX, mouseY, delta);
+        if (confirmPopup != null) confirmPopup.extractRenderState(ctx, mouseX, mouseY, delta);
     }
 
-    private void renderSavePanel(DrawContext ctx, int mouseX, int mouseY, float delta, boolean isLocal) {
+    private void renderSavePanel(GuiGraphicsExtractor ctx, int mouseX, int mouseY, float delta, boolean isLocal) {
         List<?> saves = isLocal ? localSaves : cloudSaves;
         ScrollBar scrollBar = isLocal ? localScrollBar : cloudScrollBar;
         int panelX = isLocal ? localPanelX : cloudPanelX;
@@ -491,7 +489,7 @@ public class SaveManagerScreen extends Screen {
 
         boolean blockHover = toastManager.isMouseOverToast(mouseX, mouseY) || confirmPopup != null;
 
-        if (scrollBar.updateAndRender(ctx, mouseX, mouseY, delta, client.getWindow().getHandle())) {
+        if (scrollBar.updateAndRender(ctx, mouseX, mouseY, delta, minecraft.getWindow().handle())) {
             int newOffset = (int) Math.round(scrollBar.getScrollPercentage() * maxScroll);
             if (isLocal) localScrollOffset = newOffset; else cloudScrollOffset = newOffset;
             scrollOffset = newOffset;
@@ -511,7 +509,7 @@ public class SaveManagerScreen extends Screen {
                 boolean watching = WatchManager.isWatching(worldName);
                 int starColor = watching ? 0xFFFFDD44 : 0xFF383838;
                 int starX = panelX + panelW - 12, starY = ry + 7;
-                ctx.drawTextWithShadow(textRenderer, Text.literal("\u2605"), starX, starY, starColor);
+                ctx.text(font, Component.literal("\u2605"), starX, starY, starColor);
                 if (mouseX >= starX - 1 && mouseX < starX + 8 && mouseY >= starY && mouseY < starY + 9)
                     starTooltipText = watching ? "Remove from favorite" : "Add to favorite";
             } else {
@@ -519,14 +517,14 @@ public class SaveManagerScreen extends Screen {
                 worldName = s.worldName;
                 info = formatBytes(s.fileSizeBytes) + " \u2022 " + shortDate(s.updatedAt);
             }
-            ctx.drawTextWithShadow(textRenderer, Text.literal(safe(worldName)), panelX + 4, ry + 2, 0xFFDDDDDD);
-            ctx.drawTextWithShadow(textRenderer, Text.literal(info), panelX + 4, ry + 12, 0xFF888888);
+            ctx.text(font, Component.literal(safe(worldName)), panelX + 4, ry + 2, 0xFFDDDDDD);
+            ctx.text(font, Component.literal(info), panelX + 4, ry + 12, 0xFF888888);
             ctx.fill(panelX, ry + ROW_HEIGHT - 2, panelX + panelW, ry + ROW_HEIGHT - 1, 0x22FFFFFF);
         }
         ctx.disableScissor();
     }
 
-    private void renderProgressBar(DrawContext ctx, int cx, int statusY) {
+    private void renderProgressBar(GuiGraphicsExtractor ctx, int cx, int statusY) {
         long bytes = ACTIVE.bytes, total = ACTIVE.total;
         double speed = ACTIVE.speedBps;
         int barW = 360, barH = 8, bx = cx - barW / 2, by = statusY + 14;
@@ -534,13 +532,13 @@ public class SaveManagerScreen extends Screen {
         if (total > 0) {
             double frac = Math.min(1.0, (double) bytes / total);
             ctx.fill(bx, by, bx + (int) (barW * frac), by + barH, 0xFFCCCCCC);
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal((int) Math.min(100, bytes * 100.0 / total) + "%"), cx, by - 10, 0xFFFFFFFF);
+            ctx.centeredText(font, Component.literal((int) Math.min(100, bytes * 100.0 / total) + "%"), cx, by - 10, 0xFFFFFFFF);
             String info = formatBytes(bytes) + " / " + formatBytes(total);
             if (speed > 1) {
                 long etaSec = (long) Math.ceil(Math.max(0L, total - bytes) / Math.max(1.0, speed));
                 info += " \u2022 " + formatBytes((long) speed) + "/s \u2022 ETA " + formatDuration(etaSec);
             }
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(info), cx, by + barH + 2, 0xFFCCCCCC);
+            ctx.centeredText(font, Component.literal(info), cx, by + barH + 2, 0xFFCCCCCC);
         }
     }
 
@@ -557,7 +555,7 @@ public class SaveManagerScreen extends Screen {
     // ── Input handling ──
 
     @Override
-    public boolean mouseClicked(net.minecraft.client.gui.Click click, boolean consumed) {
+    public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent click, boolean consumed) {
         double mx = click.x(), my = click.y();
         if (confirmPopup != null) return confirmPopup.mouseClicked(click, consumed);
         if (toastManager.mouseClicked(click, consumed)) return true;
@@ -612,7 +610,7 @@ public class SaveManagerScreen extends Screen {
     public boolean shouldCloseOnEsc() { return true; }
 
     @Override
-    public void close() {
+    public void onClose() {
         if (confirmPopup != null) {
             confirmPopup = null;
             localLoading = false;
@@ -625,7 +623,7 @@ public class SaveManagerScreen extends Screen {
     // ── Navigation & utilities ──
 
     private void closeScreen() {
-        if (client == null) return;
+        if (minecraft == null) return;
         closed = true;
         autoUploadWorld = null;
         ACTIVE.upActive = false;
@@ -639,21 +637,21 @@ public class SaveManagerScreen extends Screen {
         } else {
             dest = new SelectWorldScreen(ScreenUtils.resolveRootParent(parent));
         }
-        client.setScreen(dest);
+        minecraft.setScreen(dest);
     }
 
     private void openSavesFolder() {
         try {
-            Path savesDir = client.runDirectory.toPath().resolve("saves");
+            Path savesDir = minecraft.gameDirectory.toPath().resolve("saves");
             Files.createDirectories(savesDir);
-            net.minecraft.util.Util.getOperatingSystem().open(savesDir.toFile());
+            net.minecraft.util.Util.getPlatform().openFile(savesDir.toFile());
         } catch (Exception e) {
             SaveManagerMod.LOGGER.warn("Failed to open saves folder - {}", extractErrorMessage(e));
             toastManager.showError("Failed to open saves folder");
         }
     }
 
-    private void runOnClient(Runnable r) { if (client != null) client.execute(() -> { if (!closed) r.run(); }); }
+    private void runOnClient(Runnable r) { if (minecraft != null) minecraft.execute(() -> { if (!closed) r.run(); }); }
 
     private String computeQuotaLine() {
         long used = cloudSaves.stream().mapToLong(s -> Math.max(0L, s.fileSizeBytes)).sum();
@@ -762,7 +760,7 @@ public class SaveManagerScreen extends Screen {
 
     private static float tinySpinnerAngle = 0f;
 
-    private void renderTinySpinner(DrawContext ctx, int cx, int cy, float delta) {
+    private void renderTinySpinner(GuiGraphicsExtractor ctx, int cx, int cy, float delta) {
         tinySpinnerAngle = (tinySpinnerAngle + 6f * delta) % 360f;
         for (int i = 0; i < 8; i++) {
             double rad = Math.toRadians(tinySpinnerAngle + i * 45f);

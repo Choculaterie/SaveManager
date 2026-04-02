@@ -5,10 +5,10 @@ import com.choculaterie.util.ConfigManager;
 import com.choculaterie.util.ScreenUtils;
 import com.choculaterie.widget.CustomButton;
 import com.choculaterie.widget.ToastManager;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.world.SelectWorldScreen;
-import net.minecraft.text.Text;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
+import net.minecraft.network.chat.Component;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
@@ -31,17 +31,17 @@ public class AccountLinkingScreen extends Screen {
     private CustomButton copyUrlBtn = null;
 
     public AccountLinkingScreen(Screen parent) {
-        super(Text.literal("Link Your Account"));
+        super(Component.literal("Link Your Account"));
         this.parent = parent;
         this.toastManager = new ToastManager(null);
     }
 
     @Override
     protected void init() {
-        toastManager.initClient(client);
+        toastManager.initClient(minecraft);
 
         int btnSize = 20, margin = 6;
-        addDrawableChild(new CustomButton(margin, margin, btnSize, btnSize, Text.literal("\u2190"), b -> goBack()));
+        addRenderableWidget(new CustomButton(margin, margin, btnSize, btnSize, Component.literal("\u2190"), b -> goBack()));
 
         String apiKey = ConfigManager.loadApiKey();
         boolean hasKey = apiKey != null && !apiKey.isBlank();
@@ -49,14 +49,14 @@ public class AccountLinkingScreen extends Screen {
         int cx = this.width / 2, btnW = 100;
         int btnY = this.height / 2 - 10;
         linkBtn = new CustomButton(cx - btnW / 2, btnY, btnW, 20,
-                Text.literal(hasKey ? "Reset" : "Link Account"),
+                Component.literal(hasKey ? "Reset" : "Link Account"),
                 b -> handleLinkOrReset(hasKey));
-        addDrawableChild(linkBtn);
+        addRenderableWidget(linkBtn);
 
         copyUrlBtn = new CustomButton(cx - btnW / 2, btnY, btnW, 20,
-                Text.literal("Copy URL"), b -> copyAuthUrl());
+                Component.literal("Copy URL"), b -> copyAuthUrl());
         copyUrlBtn.visible = false;
-        addDrawableChild(copyUrlBtn);
+        addRenderableWidget(copyUrlBtn);
 
         if (hasKey) networkManager.setApiKey(apiKey);
     }
@@ -65,19 +65,19 @@ public class AccountLinkingScreen extends Screen {
         if (hasKey) {
             networkManager.setApiKey(null);
             ConfigManager.clearApiKey();
-            client.setScreen(new AccountLinkingScreen(parent));
+            minecraft.setScreen(new AccountLinkingScreen(parent));
         } else {
             startOAuthFlow();
         }
     }
 
     private void goBack() {
-        if (client == null) return;
+        if (minecraft == null) return;
         stopPolling();
         String apiKey = ConfigManager.loadApiKey();
         if (parent instanceof SaveManagerScreen sms) {
             if (apiKey != null && !apiKey.isBlank()) {
-                client.setScreen(parent);
+                minecraft.setScreen(parent);
             } else {
                 navigateToWorldSelect(sms.getParent());
             }
@@ -88,15 +88,15 @@ public class AccountLinkingScreen extends Screen {
 
     private void navigateToWorldSelect(Screen target) {
         if (target instanceof SelectWorldScreen) {
-            client.setScreen(target);
+            minecraft.setScreen(target);
         } else {
-            client.setScreen(new SelectWorldScreen(ScreenUtils.resolveRootParent(target)));
+            minecraft.setScreen(new SelectWorldScreen(ScreenUtils.resolveRootParent(target)));
         }
     }
 
     private void copyAuthUrl() {
-        if (pendingAuthUrl != null && client.keyboard != null) {
-            client.keyboard.setClipboard(pendingAuthUrl);
+        if (pendingAuthUrl != null && minecraft.keyboardHandler != null) {
+            minecraft.keyboardHandler.setClipboard(pendingAuthUrl);
             toastManager.showSuccess("URL copied! Paste it in your browser.");
         }
     }
@@ -124,7 +124,7 @@ public class AccountLinkingScreen extends Screen {
                     if (linkBtn != null) linkBtn.visible = false;
                     if (copyUrlBtn != null) copyUrlBtn.visible = true;
                     linkingStatus = "Waiting for approval...";
-                    try { net.minecraft.util.Util.getOperatingSystem().open(new java.net.URI(authUrl)); }
+                    try { net.minecraft.util.Util.getPlatform().openUri(new java.net.URI(authUrl)); }
                     catch (Exception ignored) {}
                 });
                 startPolling(currentFlowId, expiresIn);
@@ -144,7 +144,7 @@ public class AccountLinkingScreen extends Screen {
 
         final int[] attempts = {0};
         final int maxAttempts = timeoutSeconds / 2;
-        final var mc = net.minecraft.client.MinecraftClient.getInstance();
+        final var mc = net.minecraft.client.Minecraft.getInstance();
 
         pollExecutor.scheduleAtFixedRate(() -> {
             if (++attempts[0] >= maxAttempts) {
@@ -160,7 +160,7 @@ public class AccountLinkingScreen extends Screen {
         }, 0, 2, TimeUnit.SECONDS);
     }
 
-    private void handlePollResponse(com.google.gson.JsonObject json, net.minecraft.client.MinecraftClient mc) {
+    private void handlePollResponse(com.google.gson.JsonObject json, net.minecraft.client.Minecraft mc) {
         String status = json.has("status") ? json.get("status").getAsString() : "pending";
 
         switch (status) {
@@ -175,7 +175,7 @@ public class AccountLinkingScreen extends Screen {
         }
     }
 
-    private void handleCompleted(com.google.gson.JsonObject json, net.minecraft.client.MinecraftClient mc) {
+    private void handleCompleted(com.google.gson.JsonObject json, net.minecraft.client.Minecraft mc) {
         String saveKey = json.has("saveKey") ? json.get("saveKey").getAsString() : null;
         if (saveKey == null) return;
 
@@ -193,8 +193,8 @@ public class AccountLinkingScreen extends Screen {
         if (linkingComplete) {
             stopPolling();
             mc.execute(() -> {
-                if (mc.getNetworkHandler() != null) {
-                    mc.getNetworkHandler().getConnection().disconnect(Text.literal("Linking complete"));
+                if (mc.getConnection() != null) {
+                    mc.getConnection().getConnection().disconnect(Component.literal("Linking complete"));
                 }
                 CompletableFuture.delayedExecutor(1, TimeUnit.SECONDS)
                         .execute(() -> mc.execute(() -> completeLinking(saveKey)));
@@ -219,13 +219,13 @@ public class AccountLinkingScreen extends Screen {
 
     private void autoJoinServerAndLink(String linkCode) {
         linkingStatus = "Joining server...";
-        final var mc = net.minecraft.client.MinecraftClient.getInstance();
+        final var mc = net.minecraft.client.Minecraft.getInstance();
         try {
-            var serverAddress = net.minecraft.client.network.ServerAddress.parse("mc.choculaterie.com");
-            var serverInfo = new net.minecraft.client.network.ServerInfo(
-                    "Choculaterie", "mc.choculaterie.com", net.minecraft.client.network.ServerInfo.ServerType.OTHER);
+            var serverAddress = net.minecraft.client.multiplayer.resolver.ServerAddress.parseString("mc.choculaterie.com");
+            var serverInfo = new net.minecraft.client.multiplayer.ServerData(
+                    "Choculaterie", "mc.choculaterie.com", net.minecraft.client.multiplayer.ServerData.Type.OTHER);
 
-            net.minecraft.client.gui.screen.multiplayer.ConnectScreen.connect(this, mc, serverAddress, serverInfo, false, null);
+            net.minecraft.client.gui.screens.ConnectScreen.startConnecting(this, mc, serverAddress, serverInfo, false, null);
 
             scheduleLinkCommand(mc, linkCode, 6);
         } catch (Exception e) {
@@ -234,11 +234,11 @@ public class AccountLinkingScreen extends Screen {
         }
     }
 
-    private void scheduleLinkCommand(net.minecraft.client.MinecraftClient mc, String linkCode, int delaySeconds) {
+    private void scheduleLinkCommand(net.minecraft.client.Minecraft mc, String linkCode, int delaySeconds) {
         CompletableFuture.delayedExecutor(delaySeconds, TimeUnit.SECONDS).execute(() -> mc.execute(() -> {
-            if (mc.player != null && mc.player.networkHandler != null) {
+            if (mc.player != null && mc.player.connection != null) {
                 linkingStatus = "Sending link command...";
-                mc.player.networkHandler.sendChatCommand("link " + linkCode);
+                mc.player.connection.sendCommand("link " + linkCode);
             } else if (delaySeconds == 6) {
                 scheduleLinkCommand(mc, linkCode, 3);
             }
@@ -256,7 +256,7 @@ public class AccountLinkingScreen extends Screen {
         networkManager.setApiKey(saveKey);
         ConfigManager.saveApiKey(saveKey);
 
-        var mc = net.minecraft.client.MinecraftClient.getInstance();
+        var mc = net.minecraft.client.Minecraft.getInstance();
         mc.execute(() -> {
             SaveManagerScreen screen;
             if (parent instanceof SaveManagerScreen sms) {
@@ -270,44 +270,44 @@ public class AccountLinkingScreen extends Screen {
     }
 
     private void runOnClient(Runnable r) {
-        if (client != null) client.execute(r);
+        if (minecraft != null) minecraft.execute(r);
     }
 
     @Override
-    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        super.render(context, mouseX, mouseY, delta);
+    public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
+        super.extractRenderState(context, mouseX, mouseY, delta);
         int cx = this.width / 2;
         int btnY = this.height / 2 - 10;
 
-        context.drawCenteredTextWithShadow(textRenderer, title, cx, 10, 0xFFFFFFFF);
+        context.centeredText(font, title, cx, 10, 0xFFFFFFFF);
 
         String apiKey = ConfigManager.loadApiKey();
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
         if (hasKey && !isLinking) {
-            context.drawCenteredTextWithShadow(textRenderer,
-                    Text.literal("\u00a7aAccount linked \u2713"), cx, btnY - 20, 0xFFFFFFFF);
-            context.drawCenteredTextWithShadow(textRenderer,
-                    Text.literal("Reset to unlink and connect a different account."),
+            context.centeredText(font,
+                    Component.literal("\u00a7aAccount linked \u2713"), cx, btnY - 20, 0xFFFFFFFF);
+            context.centeredText(font,
+                    Component.literal("Reset to unlink and connect a different account."),
                     cx, btnY + 30, 0xFF888888);
         } else if (!isLinking) {
             int stepY = btnY + 32;
             int lineH = 12;
-            context.drawCenteredTextWithShadow(textRenderer, Text.literal("How it works:"), cx, stepY, 0xFF999999);
+            context.centeredText(font, Component.literal("How it works:"), cx, stepY, 0xFF999999);
             stepY += lineH + 4;
-            context.drawCenteredTextWithShadow(textRenderer, Text.literal("1. A browser window will open. Sign in and click Approve."), cx, stepY, 0xFFCCCCCC);
+            context.centeredText(font, Component.literal("1. A browser window will open. Sign in and click Approve."), cx, stepY, 0xFFCCCCCC);
             stepY += lineH;
-            context.drawCenteredTextWithShadow(textRenderer, Text.literal("2. The game will briefly join a server to verify your Minecraft account."), cx, stepY, 0xFFCCCCCC);
+            context.centeredText(font, Component.literal("2. The game will briefly join a server to verify your Minecraft account."), cx, stepY, 0xFFCCCCCC);
             stepY += lineH;
-            context.drawCenteredTextWithShadow(textRenderer, Text.literal("3. Once verified, you're ready to sync your saves!"), cx, stepY, 0xFFCCCCCC);
+            context.centeredText(font, Component.literal("3. Once verified, you're ready to sync your saves!"), cx, stepY, 0xFFCCCCCC);
         } else {
             if (!linkingStatus.isEmpty()) {
-                context.drawCenteredTextWithShadow(textRenderer,
-                        Text.literal(linkingStatus), cx, btnY - 20, 0xFF88FF88);
+                context.centeredText(font,
+                        Component.literal(linkingStatus), cx, btnY - 20, 0xFF88FF88);
             }
             if (pendingAuthUrl != null) {
-                context.drawCenteredTextWithShadow(textRenderer,
-                        Text.literal("Browser didn't open? Copy the URL and paste it manually."),
+                context.centeredText(font,
+                        Component.literal("Browser didn't open? Copy the URL and paste it manually."),
                         cx, btnY + 30, 0xFF888888);
             }
         }
@@ -319,5 +319,5 @@ public class AccountLinkingScreen extends Screen {
     public boolean shouldCloseOnEsc() { return true; }
 
     @Override
-    public void close() { goBack(); }
+    public void onClose() { goBack(); }
 }

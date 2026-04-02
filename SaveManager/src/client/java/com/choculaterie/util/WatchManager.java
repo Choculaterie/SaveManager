@@ -1,7 +1,7 @@
 package com.choculaterie.util;
 
 import com.google.gson.*;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 
 import java.io.*;
 import java.nio.file.*;
@@ -122,6 +122,6 @@ public final class WatchManager {
     }
 
     private static File getFile() {
-        return new File(new File(MinecraftClient.getInstance().runDirectory, "config"), WATCH_FILE);
+        return new File(new File(Minecraft.getInstance().gameDirectory, "config"), WATCH_FILE);
     }
 }
