@@ -46,9 +46,11 @@ public class CustomButton extends Button {
 
         context.fill(this.getX(), this.getY(), this.getX() + this.getWidth(), this.getY() + this.getHeight(), color);
         context.fill(this.getX(), this.getY(), this.getX() + this.getWidth(), this.getY() + 1, 0xFF555555);
-        context.fill(this.getX(), this.getY() + this.getHeight() - 1, this.getX() + this.getWidth(), this.getY() + this.getHeight(), 0xFF555555);
+        context.fill(this.getX(), this.getY() + this.getHeight() - 1, this.getX() + this.getWidth(),
+                this.getY() + this.getHeight(), 0xFF555555);
         context.fill(this.getX(), this.getY(), this.getX() + 1, this.getY() + this.getHeight(), 0xFF555555);
-        context.fill(this.getX() + this.getWidth() - 1, this.getY(), this.getX() + this.getWidth(), this.getY() + this.getHeight(), 0xFF555555);
+        context.fill(this.getX() + this.getWidth() - 1, this.getY(), this.getX() + this.getWidth(),
+                this.getY() + this.getHeight(), 0xFF555555);
 
         Font tr = Minecraft.getInstance().font;
         int textColor = this.isActive() ? TEXT_COLOR : TEXT_DISABLED_COLOR;

@@ -18,12 +18,14 @@ import java.util.concurrent.CompletableFuture;
 
 @Mixin(SelectWorldScreen.class)
 public abstract class SinglePlayerScreenMixin extends Screen {
-    protected SinglePlayerScreenMixin(Component title) { super(title); }
+    protected SinglePlayerScreenMixin(Component title) {
+        super(title);
+    }
 
     @Inject(method = "init", at = @At("TAIL"), remap = false)
     private void savemanager$init(CallbackInfo ci) {
         addRenderableWidget(new CustomButton(6, 6, 20, 20, Component.literal("\u2601"),
-                b -> this.minecraft.setScreen(new SaveManagerScreen((Screen)(Object)this))));
+                b -> this.minecraft.setScreen(new SaveManagerScreen((Screen) (Object) this))));
 
         Minecraft mc = Minecraft.getInstance();
         Path savesDir = mc.gameDirectory.toPath().resolve("saves");

@@ -14,23 +14,28 @@ public final class WatchManager {
     private static boolean loaded = false;
     private static volatile List<String> pendingNotifications = List.of();
 
-    private WatchManager() {}
+    private WatchManager() {
+    }
 
     private static synchronized void ensureLoaded() {
-        if (loaded) return;
+        if (loaded)
+            return;
         loaded = true;
         try {
             File f = getFile();
-            if (!f.exists()) return;
+            if (!f.exists())
+                return;
             try (FileReader r = new FileReader(f)) {
                 JsonObject obj = new Gson().fromJson(r, JsonObject.class);
-                if (obj == null || !obj.has("worlds")) return;
+                if (obj == null || !obj.has("worlds"))
+                    return;
                 for (var entry : obj.getAsJsonObject("worlds").entrySet()) {
                     if (entry.getValue().isJsonPrimitive())
                         watchedWorlds.put(entry.getKey(), entry.getValue().getAsLong());
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
     }
 
     private static synchronized void persist() {
@@ -44,7 +49,8 @@ public final class WatchManager {
             try (FileWriter w = new FileWriter(f)) {
                 new GsonBuilder().setPrettyPrinting().create().toJson(root, w);
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
     }
 
     public static synchronized boolean isWatching(String worldName) {
@@ -75,7 +81,8 @@ public final class WatchManager {
         List<String> changed = new ArrayList<>();
         for (var entry : watchedWorlds.entrySet()) {
             Path worldDir = savesDir.resolve(entry.getKey());
-            if (!Files.exists(worldDir)) continue;
+            if (!Files.exists(worldDir))
+                continue;
             if (computeMaxModified(worldDir) > entry.getValue())
                 changed.add(entry.getKey());
         }
@@ -99,7 +106,8 @@ public final class WatchManager {
     public static synchronized void dismissChanges(List<String> worldNames, Path savesDir) {
         ensureLoaded();
         for (String name : worldNames) {
-            if (!watchedWorlds.containsKey(name)) continue;
+            if (!watchedWorlds.containsKey(name))
+                continue;
             Path worldDir = savesDir.resolve(name);
             if (Files.exists(worldDir))
                 watchedWorlds.put(name, computeMaxModified(worldDir));
@@ -108,7 +116,7 @@ public final class WatchManager {
     }
 
     private static long computeMaxModified(Path dir) {
-        final long[] max = {0L};
+        final long[] max = { 0L };
         try {
             Files.walkFileTree(dir, new SimpleFileVisitor<Path>() {
                 @Override
@@ -117,7 +125,8 @@ public final class WatchManager {
                     return FileVisitResult.CONTINUE;
                 }
             });
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return max[0];
     }
 

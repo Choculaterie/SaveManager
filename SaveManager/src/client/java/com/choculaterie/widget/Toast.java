@@ -56,7 +56,8 @@ public class Toast {
         this(message, type, screenWidth, yPosition, hasCopyButton, copyText, null);
     }
 
-    public Toast(String message, Type type, int screenWidth, int yPosition, boolean hasCopyButton, String copyText, String hintText) {
+    public Toast(String message, Type type, int screenWidth, int yPosition, boolean hasCopyButton, String copyText,
+            String hintText) {
         this.message = message;
         this.type = type;
         this.screenWidth = screenWidth;
@@ -67,9 +68,11 @@ public class Toast {
         this.hasCopyButton = hasCopyButton;
         this.copyText = copyText != null ? copyText : message;
         this.hintText = hintText;
-        closeButton = new CustomButton(0, 0, 16, 16, Component.literal("×"), btn -> {});
+        closeButton = new CustomButton(0, 0, 16, 16, Component.literal("×"), btn -> {
+        });
         if (hasCopyButton) {
-            copyButton = new CustomButton(0, 0, 50, 18, Component.literal("Copy"), btn -> {});
+            copyButton = new CustomButton(0, 0, 50, 18, Component.literal("Copy"), btn -> {
+            });
         }
     }
 
@@ -131,7 +134,8 @@ public class Toast {
 
         int toastHeight = calculatedHeight;
         int alpha = (int) (255 * fadeProgress);
-        if (alpha <= 0) return true;
+        if (alpha <= 0)
+            return true;
 
         int bgColorWithAlpha = (alpha << 24) | 0x002A2A2A;
         context.fill(currentX, yPosition, currentX + TOAST_WIDTH, yPosition + toastHeight, bgColorWithAlpha);
@@ -141,8 +145,10 @@ public class Toast {
 
         int topBorderColorWithAlpha = (alpha << 24) | 0x00444444;
         context.fill(currentX, yPosition, currentX + TOAST_WIDTH, yPosition + 1, topBorderColorWithAlpha);
-        context.fill(currentX, yPosition + toastHeight - 1, currentX + TOAST_WIDTH, yPosition + toastHeight, topBorderColorWithAlpha);
-        context.fill(currentX + TOAST_WIDTH - 1, yPosition, currentX + TOAST_WIDTH, yPosition + toastHeight, topBorderColorWithAlpha);
+        context.fill(currentX, yPosition + toastHeight - 1, currentX + TOAST_WIDTH, yPosition + toastHeight,
+                topBorderColorWithAlpha);
+        context.fill(currentX + TOAST_WIDTH - 1, yPosition, currentX + TOAST_WIDTH, yPosition + toastHeight,
+                topBorderColorWithAlpha);
 
         String icon = switch (type) {
             case SUCCESS -> "✓";
@@ -159,7 +165,8 @@ public class Toast {
         int textColorWithAlpha = (alpha << 24) | 0x00FFFFFF;
 
         for (int i = 0; i < wrappedLines.size(); i++) {
-            context.text(textRenderer, wrappedLines.get(i), textX, textY + (i * LINE_HEIGHT), textColorWithAlpha, false);
+            context.text(textRenderer, wrappedLines.get(i), textX, textY + (i * LINE_HEIGHT), textColorWithAlpha,
+                    false);
         }
 
         if (closeButton != null) {
@@ -219,7 +226,8 @@ public class Toast {
     }
 
     public boolean isCloseButtonClicked(double mouseX, double mouseY) {
-        if (closeButton == null) return false;
+        if (closeButton == null)
+            return false;
         return mouseX >= closeButton.getX() && mouseX < closeButton.getX() + closeButton.getWidth() &&
                 mouseY >= closeButton.getY() && mouseY < closeButton.getY() + closeButton.getHeight();
     }
@@ -251,7 +259,8 @@ public class Toast {
     }
 
     public boolean isCopyButtonClicked(double mouseX, double mouseY) {
-        if (!hasCopyButton || copyButton == null) return false;
+        if (!hasCopyButton || copyButton == null)
+            return false;
         return mouseX >= copyButton.getX() && mouseX < copyButton.getX() + copyButton.getWidth() &&
                 mouseY >= copyButton.getY() && mouseY < copyButton.getY() + copyButton.getHeight();
     }
@@ -260,4 +269,3 @@ public class Toast {
         return copyText;
     }
 }
-

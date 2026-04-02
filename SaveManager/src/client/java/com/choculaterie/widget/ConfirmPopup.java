@@ -37,7 +37,8 @@ public class ConfirmPopup implements Renderable, GuiEventListener {
         this(parent, title, message, onConfirm, onCancel, "Delete");
     }
 
-    public ConfirmPopup(Screen parent, String title, String message, Runnable onConfirm, Runnable onCancel, String confirmButtonText) {
+    public ConfirmPopup(Screen parent, String title, String message, Runnable onConfirm, Runnable onCancel,
+            String confirmButtonText) {
         this.title = title;
         this.onConfirm = onConfirm;
         this.onCancel = onCancel;
@@ -68,8 +69,10 @@ public class ConfirmPopup implements Renderable, GuiEventListener {
 
         int buttonY = y + popupHeight - PADDING - BUTTON_HEIGHT;
         int buttonWidth = (POPUP_WIDTH - PADDING * 3) / 2;
-        cancelButton = new CustomButton(x + PADDING, buttonY, buttonWidth, BUTTON_HEIGHT, Component.literal("Cancel"), button -> onCancel.run());
-        confirmButton = new CustomButton(x + POPUP_WIDTH - PADDING - buttonWidth, buttonY, buttonWidth, BUTTON_HEIGHT, Component.literal(confirmButtonText), button -> onConfirm.run());
+        cancelButton = new CustomButton(x + PADDING, buttonY, buttonWidth, BUTTON_HEIGHT, Component.literal("Cancel"),
+                button -> onCancel.run());
+        confirmButton = new CustomButton(x + POPUP_WIDTH - PADDING - buttonWidth, buttonY, buttonWidth, BUTTON_HEIGHT,
+                Component.literal(confirmButtonText), button -> onConfirm.run());
     }
 
     private List<String> wrapText(String text, int maxWidth, Minecraft client) {
@@ -85,8 +88,10 @@ public class ConfirmPopup implements Renderable, GuiEventListener {
             boolean enterPressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_ENTER) == GLFW.GLFW_PRESS ||
                     GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_KP_ENTER) == GLFW.GLFW_PRESS;
             boolean escapePressed = GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS;
-            if (enterPressed && !wasEnterPressed) onConfirm.run();
-            if (escapePressed && !wasEscapePressed) onCancel.run();
+            if (enterPressed && !wasEnterPressed)
+                onConfirm.run();
+            if (escapePressed && !wasEscapePressed)
+                onCancel.run();
             wasEnterPressed = enterPressed;
             wasEscapePressed = escapePressed;
         }
@@ -101,7 +106,8 @@ public class ConfirmPopup implements Renderable, GuiEventListener {
         context.centeredText(client.font, title, x + POPUP_WIDTH / 2, y + PADDING, 0xFFFFFFFF);
 
         int messageAreaY = y + PADDING + LINE_HEIGHT + PADDING;
-        context.enableScissor(x + PADDING, messageAreaY, x + POPUP_WIDTH - PADDING, messageAreaY + visibleMessageHeight);
+        context.enableScissor(x + PADDING, messageAreaY, x + POPUP_WIDTH - PADDING,
+                messageAreaY + visibleMessageHeight);
         int messageY = messageAreaY - (int) scrollOffset;
         for (String line : wrappedMessage) {
             if (messageY + LINE_HEIGHT >= messageAreaY && messageY < messageAreaY + visibleMessageHeight) {
@@ -113,15 +119,18 @@ public class ConfirmPopup implements Renderable, GuiEventListener {
 
         if (scrollBar != null && client.getWindow() != null) {
             scrollBar.setScrollPercentage(scrollOffset / Math.max(1, actualMessageHeight - visibleMessageHeight));
-            boolean scrollChanged = scrollBar.updateAndRender(context, mouseX, mouseY, delta, client.getWindow().handle());
+            boolean scrollChanged = scrollBar.updateAndRender(context, mouseX, mouseY, delta,
+                    client.getWindow().handle());
             if (scrollChanged || scrollBar.isDragging()) {
                 double maxScroll = actualMessageHeight - visibleMessageHeight;
                 scrollOffset = scrollBar.getScrollPercentage() * maxScroll;
             }
         }
 
-        if (cancelButton != null) cancelButton.extractRenderState(context, mouseX, mouseY, delta);
-        if (confirmButton != null) confirmButton.extractRenderState(context, mouseX, mouseY, delta);
+        if (cancelButton != null)
+            cancelButton.extractRenderState(context, mouseX, mouseY, delta);
+        if (confirmButton != null)
+            confirmButton.extractRenderState(context, mouseX, mouseY, delta);
     }
 
     public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent click, boolean consumed) {
@@ -136,12 +145,14 @@ public class ConfirmPopup implements Renderable, GuiEventListener {
             onCancel.run();
             return true;
         }
-        if (cancelButton != null && mouseX >= cancelButton.getX() && mouseX < cancelButton.getX() + cancelButton.getWidth() &&
+        if (cancelButton != null && mouseX >= cancelButton.getX()
+                && mouseX < cancelButton.getX() + cancelButton.getWidth() &&
                 mouseY >= cancelButton.getY() && mouseY < cancelButton.getY() + cancelButton.getHeight()) {
             onCancel.run();
             return true;
         }
-        if (confirmButton != null && mouseX >= confirmButton.getX() && mouseX < confirmButton.getX() + confirmButton.getWidth() &&
+        if (confirmButton != null && mouseX >= confirmButton.getX()
+                && mouseX < confirmButton.getX() + confirmButton.getWidth() &&
                 mouseY >= confirmButton.getY() && mouseY < confirmButton.getY() + confirmButton.getHeight()) {
             onConfirm.run();
             return true;
@@ -152,7 +163,8 @@ public class ConfirmPopup implements Renderable, GuiEventListener {
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
         if (scrollBar != null) {
             int messageAreaY = y + PADDING + LINE_HEIGHT + PADDING;
-            if (mouseX >= x && mouseX < x + POPUP_WIDTH && mouseY >= messageAreaY && mouseY < messageAreaY + visibleMessageHeight) {
+            if (mouseX >= x && mouseX < x + POPUP_WIDTH && mouseY >= messageAreaY
+                    && mouseY < messageAreaY + visibleMessageHeight) {
                 double maxScroll = actualMessageHeight - visibleMessageHeight;
                 scrollOffset = Math.max(0, Math.min(maxScroll, scrollOffset - verticalAmount * LINE_HEIGHT));
                 return true;
@@ -162,7 +174,8 @@ public class ConfirmPopup implements Renderable, GuiEventListener {
     }
 
     @Override
-    public void setFocused(boolean focused) {}
+    public void setFocused(boolean focused) {
+    }
 
     @Override
     public boolean isFocused() {

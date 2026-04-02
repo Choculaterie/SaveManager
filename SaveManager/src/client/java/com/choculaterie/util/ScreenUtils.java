@@ -6,7 +6,8 @@ import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import java.lang.reflect.Field;
 
 public final class ScreenUtils {
-    private ScreenUtils() {}
+    private ScreenUtils() {
+    }
 
     public static Screen resolveRootParent(Screen parent) {
         Screen p = parent;
@@ -16,7 +17,8 @@ public final class ScreenUtils {
                 Field f = SelectWorldScreen.class.getDeclaredField("lastScreen");
                 f.setAccessible(true);
                 Screen next = (Screen) f.get(p);
-                if (next == null || next == p) break;
+                if (next == null || next == p)
+                    break;
                 p = next;
             } catch (Throwable ignored) {
                 break;

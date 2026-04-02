@@ -41,7 +41,8 @@ public class AccountLinkingScreen extends Screen {
         toastManager.initClient(minecraft);
 
         int btnSize = 20, margin = 6;
-        addRenderableWidget(new CustomButton(margin, margin, btnSize, btnSize, Component.literal("\u2190"), b -> goBack()));
+        addRenderableWidget(
+                new CustomButton(margin, margin, btnSize, btnSize, Component.literal("\u2190"), b -> goBack()));
 
         String apiKey = ConfigManager.loadApiKey();
         boolean hasKey = apiKey != null && !apiKey.isBlank();
@@ -58,7 +59,8 @@ public class AccountLinkingScreen extends Screen {
         copyUrlBtn.visible = false;
         addRenderableWidget(copyUrlBtn);
 
-        if (hasKey) networkManager.setApiKey(apiKey);
+        if (hasKey)
+            networkManager.setApiKey(apiKey);
     }
 
     private void handleLinkOrReset(boolean hasKey) {
@@ -72,7 +74,8 @@ public class AccountLinkingScreen extends Screen {
     }
 
     private void goBack() {
-        if (minecraft == null) return;
+        if (minecraft == null)
+            return;
         stopPolling();
         String apiKey = ConfigManager.loadApiKey();
         if (parent instanceof SaveManagerScreen sms) {
@@ -102,34 +105,48 @@ public class AccountLinkingScreen extends Screen {
     }
 
     private void startOAuthFlow() {
-        if (isLinking) return;
+        if (isLinking)
+            return;
         isLinking = true;
         linkingStatus = "Initiating...";
 
         networkManager.initiateOAuthFlow("SaveManager Mod").whenComplete((json, err) -> {
             if (err != null) {
-                runOnClient(() -> { isLinking = false; linkingStatus = ""; });
+                runOnClient(() -> {
+                    isLinking = false;
+                    linkingStatus = "";
+                });
                 return;
             }
             try {
                 currentFlowId = json.has("flowId") ? json.get("flowId").getAsString() : null;
                 int expiresIn = json.has("expiresInSeconds") ? json.get("expiresInSeconds").getAsInt() : 300;
                 if (currentFlowId == null) {
-                    runOnClient(() -> { isLinking = false; linkingStatus = ""; });
+                    runOnClient(() -> {
+                        isLinking = false;
+                        linkingStatus = "";
+                    });
                     return;
                 }
                 String authUrl = networkManager.getOAuthAuthorizeUrl(currentFlowId);
                 runOnClient(() -> {
                     pendingAuthUrl = authUrl;
-                    if (linkBtn != null) linkBtn.visible = false;
-                    if (copyUrlBtn != null) copyUrlBtn.visible = true;
+                    if (linkBtn != null)
+                        linkBtn.visible = false;
+                    if (copyUrlBtn != null)
+                        copyUrlBtn.visible = true;
                     linkingStatus = "Waiting for approval...";
-                    try { net.minecraft.util.Util.getPlatform().openUri(new java.net.URI(authUrl)); }
-                    catch (Exception ignored) {}
+                    try {
+                        net.minecraft.util.Util.getPlatform().openUri(new java.net.URI(authUrl));
+                    } catch (Exception ignored) {
+                    }
                 });
                 startPolling(currentFlowId, expiresIn);
             } catch (Exception e) {
-                runOnClient(() -> { isLinking = false; linkingStatus = ""; });
+                runOnClient(() -> {
+                    isLinking = false;
+                    linkingStatus = "";
+                });
             }
         });
     }
@@ -142,20 +159,26 @@ public class AccountLinkingScreen extends Screen {
             return t;
         });
 
-        final int[] attempts = {0};
+        final int[] attempts = { 0 };
         final int maxAttempts = timeoutSeconds / 2;
         final var mc = net.minecraft.client.Minecraft.getInstance();
 
         pollExecutor.scheduleAtFixedRate(() -> {
             if (++attempts[0] >= maxAttempts) {
-                mc.execute(() -> { stopPolling(); isLinking = false; linkingStatus = ""; });
+                mc.execute(() -> {
+                    stopPolling();
+                    isLinking = false;
+                    linkingStatus = "";
+                });
                 return;
             }
             networkManager.getOAuthFlowStatus(flowId).whenComplete((json, err) -> {
-                if (err != null) return;
+                if (err != null)
+                    return;
                 try {
                     handlePollResponse(json, mc);
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) {
+                }
             });
         }, 0, 2, TimeUnit.SECONDS);
     }
@@ -164,9 +187,17 @@ public class AccountLinkingScreen extends Screen {
         String status = json.has("status") ? json.get("status").getAsString() : "pending";
 
         switch (status) {
-            case "expired" -> mc.execute(() -> { stopPolling(); isLinking = false; linkingStatus = ""; });
+            case "expired" -> mc.execute(() -> {
+                stopPolling();
+                isLinking = false;
+                linkingStatus = "";
+            });
             case "cancelled" -> {
-                mc.execute(() -> { stopPolling(); isLinking = false; linkingStatus = "\u00a7cCancelled"; });
+                mc.execute(() -> {
+                    stopPolling();
+                    isLinking = false;
+                    linkingStatus = "\u00a7cCancelled";
+                });
                 CompletableFuture.delayedExecutor(3, TimeUnit.SECONDS)
                         .execute(() -> mc.execute(() -> linkingStatus = ""));
             }
@@ -177,11 +208,15 @@ public class AccountLinkingScreen extends Screen {
 
     private void handleCompleted(com.google.gson.JsonObject json, net.minecraft.client.Minecraft mc) {
         String saveKey = json.has("saveKey") ? json.get("saveKey").getAsString() : null;
-        if (saveKey == null) return;
+        if (saveKey == null)
+            return;
 
         boolean isMinecraftLinked = json.has("isMinecraftLinked") && json.get("isMinecraftLinked").getAsBoolean();
-        boolean linkingComplete = json.has("minecraftLinkingComplete") && json.get("minecraftLinkingComplete").getAsBoolean();
-        String linkCode = json.has("linkCode") && !json.get("linkCode").isJsonNull() ? json.get("linkCode").getAsString() : null;
+        boolean linkingComplete = json.has("minecraftLinkingComplete")
+                && json.get("minecraftLinkingComplete").getAsBoolean();
+        String linkCode = json.has("linkCode") && !json.get("linkCode").isJsonNull()
+                ? json.get("linkCode").getAsString()
+                : null;
 
         pendingSaveKey = saveKey;
 
@@ -221,11 +256,13 @@ public class AccountLinkingScreen extends Screen {
         linkingStatus = "Joining server...";
         final var mc = net.minecraft.client.Minecraft.getInstance();
         try {
-            var serverAddress = net.minecraft.client.multiplayer.resolver.ServerAddress.parseString("mc.choculaterie.com");
+            var serverAddress = net.minecraft.client.multiplayer.resolver.ServerAddress
+                    .parseString("mc.choculaterie.com");
             var serverInfo = new net.minecraft.client.multiplayer.ServerData(
                     "Choculaterie", "mc.choculaterie.com", net.minecraft.client.multiplayer.ServerData.Type.OTHER);
 
-            net.minecraft.client.gui.screens.ConnectScreen.startConnecting(this, mc, serverAddress, serverInfo, false, null);
+            net.minecraft.client.gui.screens.ConnectScreen.startConnecting(this, mc, serverAddress, serverInfo, false,
+                    null);
 
             scheduleLinkCommand(mc, linkCode, 6);
         } catch (Exception e) {
@@ -270,7 +307,8 @@ public class AccountLinkingScreen extends Screen {
     }
 
     private void runOnClient(Runnable r) {
-        if (minecraft != null) minecraft.execute(r);
+        if (minecraft != null)
+            minecraft.execute(r);
     }
 
     @Override
@@ -295,11 +333,15 @@ public class AccountLinkingScreen extends Screen {
             int lineH = 12;
             context.centeredText(font, Component.literal("How it works:"), cx, stepY, 0xFF999999);
             stepY += lineH + 4;
-            context.centeredText(font, Component.literal("1. A browser window will open. Sign in and click Approve."), cx, stepY, 0xFFCCCCCC);
+            context.centeredText(font, Component.literal("1. A browser window will open. Sign in and click Approve."),
+                    cx, stepY, 0xFFCCCCCC);
             stepY += lineH;
-            context.centeredText(font, Component.literal("2. The game will briefly join a server to verify your Minecraft account."), cx, stepY, 0xFFCCCCCC);
+            context.centeredText(font,
+                    Component.literal("2. The game will briefly join a server to verify your Minecraft account."), cx,
+                    stepY, 0xFFCCCCCC);
             stepY += lineH;
-            context.centeredText(font, Component.literal("3. Once verified, you're ready to sync your saves!"), cx, stepY, 0xFFCCCCCC);
+            context.centeredText(font, Component.literal("3. Once verified, you're ready to sync your saves!"), cx,
+                    stepY, 0xFFCCCCCC);
         } else {
             if (!linkingStatus.isEmpty()) {
                 context.centeredText(font,
@@ -316,8 +358,12 @@ public class AccountLinkingScreen extends Screen {
     }
 
     @Override
-    public boolean shouldCloseOnEsc() { return true; }
+    public boolean shouldCloseOnEsc() {
+        return true;
+    }
 
     @Override
-    public void onClose() { goBack(); }
+    public void onClose() {
+        goBack();
+    }
 }

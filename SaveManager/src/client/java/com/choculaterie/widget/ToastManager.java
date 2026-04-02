@@ -29,7 +29,8 @@ public class ToastManager {
     }
 
     public void showToast(String message, Toast.Type type, boolean hasCopyButton, String copyText, String hintText) {
-        if (client.getWindow() == null) return;
+        if (client.getWindow() == null)
+            return;
         int screenWidth = client.getWindow().getGuiScaledWidth();
         int screenHeight = client.getWindow().getGuiScaledHeight();
         int yPosition = TOP_PADDING;
@@ -73,7 +74,8 @@ public class ToastManager {
     }
 
     public void render(GuiGraphicsExtractor context, float delta, int mouseX, int mouseY) {
-        if (toasts.isEmpty()) return;
+        if (toasts.isEmpty())
+            return;
         Toast.updateMousePosition(mouseX, mouseY);
         Iterator<Toast> iterator = toasts.iterator();
         boolean toastRemoved = false;

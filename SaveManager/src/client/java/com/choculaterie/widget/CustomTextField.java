@@ -44,11 +44,20 @@ public class CustomTextField extends EditBox {
     }
 
     @Override
-    public void insertText(String text) {}
+    public void insertText(String text) {
+    }
 
-    public void setOnEnterPressed(Runnable callback) { this.onEnterPressed = callback; }
-    public void setOnChanged(Runnable callback) { this.onChanged = callback; }
-    public void setOnClearPressed(Runnable callback) { this.onClearPressed = callback; }
+    public void setOnEnterPressed(Runnable callback) {
+        this.onEnterPressed = callback;
+    }
+
+    public void setOnChanged(Runnable callback) {
+        this.onChanged = callback;
+    }
+
+    public void setOnClearPressed(Runnable callback) {
+        this.onClearPressed = callback;
+    }
 
     @Override
     public void setFocused(boolean focused) {
@@ -75,7 +84,8 @@ public class CustomTextField extends EditBox {
     }
 
     private void onCharTyped(char c) {
-        if (c == '\r' || c == '\n' || c < 32) return;
+        if (c == '\r' || c == '\n' || c < 32)
+            return;
         String text = this.getValue();
         int cursor = this.getCursorPosition();
         if (text.length() < 256) {
@@ -92,7 +102,8 @@ public class CustomTextField extends EditBox {
     }
 
     private boolean isOverClearButton(int mouseX, int mouseY) {
-        if (this.getValue().isEmpty()) return false;
+        if (this.getValue().isEmpty())
+            return false;
         int clearX = this.getX() + this.getWidth() - CLEAR_BUTTON_SIZE - 4;
         int clearY = this.getY() + (this.getHeight() - CLEAR_BUTTON_SIZE) / 2 + 1;
         return mouseX >= clearX && mouseX < clearX + CLEAR_BUTTON_SIZE &&
@@ -110,7 +121,8 @@ public class CustomTextField extends EditBox {
             wasClearButtonMouseDown = false;
         }
 
-        if (wh != 0 && this.isFocused()) handleSpecialKeys(wh);
+        if (wh != 0 && this.isFocused())
+            handleSpecialKeys(wh);
 
         renderBackground(context);
         renderText(context, mouseX, mouseY);
@@ -118,10 +130,12 @@ public class CustomTextField extends EditBox {
 
     private void handleClearButton(long wh, int mouseX, int mouseY) {
         boolean isMouseDown = GLFW.glfwGetMouseButton(wh, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
-        if (!this.getValue().isEmpty() && isMouseDown && !wasClearButtonMouseDown && isOverClearButton(mouseX, mouseY)) {
+        if (!this.getValue().isEmpty() && isMouseDown && !wasClearButtonMouseDown
+                && isOverClearButton(mouseX, mouseY)) {
             this.setValue("");
             fireChanged();
-            if (onClearPressed != null) onClearPressed.run();
+            if (onClearPressed != null)
+                onClearPressed.run();
         }
         wasClearButtonMouseDown = isMouseDown;
     }
@@ -185,7 +199,8 @@ public class CustomTextField extends EditBox {
         String text = this.getValue();
         int cursor = this.getCursorPosition();
 
-        if (backspace.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_BACKSPACE) == GLFW.GLFW_PRESS, now, INITIAL_DELAY, REPEAT_DELAY)) {
+        if (backspace.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_BACKSPACE) == GLFW.GLFW_PRESS, now, INITIAL_DELAY,
+                REPEAT_DELAY)) {
             if (cursor > 0) {
                 this.setValue(text.substring(0, cursor - 1) + text.substring(cursor));
                 this.setCursorPosition(cursor - 1);
@@ -195,7 +210,8 @@ public class CustomTextField extends EditBox {
             }
         }
 
-        if (delete.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_DELETE) == GLFW.GLFW_PRESS, now, INITIAL_DELAY, REPEAT_DELAY)) {
+        if (delete.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_DELETE) == GLFW.GLFW_PRESS, now, INITIAL_DELAY,
+                REPEAT_DELAY)) {
             if (cursor < text.length()) {
                 this.setValue(text.substring(0, cursor) + text.substring(cursor + 1));
                 text = this.getValue();
@@ -203,23 +219,30 @@ public class CustomTextField extends EditBox {
             }
         }
 
-        if (left.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS, now, INITIAL_DELAY, REPEAT_DELAY)) {
-            if (cursor > 0) this.setCursorPosition(cursor - 1);
+        if (left.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_LEFT) == GLFW.GLFW_PRESS, now, INITIAL_DELAY,
+                REPEAT_DELAY)) {
+            if (cursor > 0)
+                this.setCursorPosition(cursor - 1);
         }
 
-        if (right.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS, now, INITIAL_DELAY, REPEAT_DELAY)) {
-            if (cursor < text.length()) this.setCursorPosition(cursor + 1);
+        if (right.shouldFire(GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_RIGHT) == GLFW.GLFW_PRESS, now, INITIAL_DELAY,
+                REPEAT_DELAY)) {
+            if (cursor < text.length())
+                this.setCursorPosition(cursor + 1);
         }
 
         boolean isHomeDown = GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_HOME) == GLFW.GLFW_PRESS;
-        if (isHomeDown && !wasHomePressed) this.setCursorPosition(0);
+        if (isHomeDown && !wasHomePressed)
+            this.setCursorPosition(0);
         wasHomePressed = isHomeDown;
 
         boolean isEndDown = GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_END) == GLFW.GLFW_PRESS;
-        if (isEndDown && !wasEndPressed) this.setCursorPosition(text.length());
+        if (isEndDown && !wasEndPressed)
+            this.setCursorPosition(text.length());
         wasEndPressed = isEndDown;
 
-        if (GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS) this.setFocused(false);
+        if (GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS)
+            this.setFocused(false);
 
         boolean isCtrlDown = GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
                 GLFW.glfwGetKey(wh, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
@@ -249,7 +272,8 @@ public class CustomTextField extends EditBox {
     }
 
     private void fireChanged() {
-        if (onChanged != null) onChanged.run();
+        if (onChanged != null)
+            onChanged.run();
     }
 
     private long getWindowHandle() {

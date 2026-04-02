@@ -49,8 +49,10 @@ public class ScrollBar implements Renderable {
         return isDragging;
     }
 
-    public boolean updateAndRender(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta, long windowHandle) {
-        if (!isVisible()) return false;
+    public boolean updateAndRender(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta,
+            long windowHandle) {
+        if (!isVisible())
+            return false;
 
         boolean isMouseDown = GLFW.glfwGetMouseButton(windowHandle, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
         double handleHeight = Math.max(20, (visibleHeight / contentHeight) * height);
@@ -108,7 +110,8 @@ public class ScrollBar implements Renderable {
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
-        if (!isVisible()) return;
+        if (!isVisible())
+            return;
         context.fill(x, y, x + SCROLLBAR_WIDTH, y + height, SCROLLBAR_COLOR);
         double handleHeight = Math.max(20, (visibleHeight / contentHeight) * height);
         double maxHandleY = height - handleHeight;
