@@ -1,0 +1,9 @@
+{
+	"required": true,
+	"package": "com.choculaterie.mixin.client",
+	"compatibilityLevel": "JAVA_22",
+	"client": [],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}
