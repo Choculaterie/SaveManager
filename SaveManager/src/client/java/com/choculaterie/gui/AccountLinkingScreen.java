@@ -4,11 +4,14 @@ import com.choculaterie.network.NetworkManager;
 import com.choculaterie.util.ConfigManager;
 import com.choculaterie.util.ScreenUtils;
 import com.choculaterie.widget.CustomButton;
+import com.choculaterie.widget.CustomTextField;
 import com.choculaterie.widget.ToastManager;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.network.chat.Component;
+
+import net.minecraft.client.input.MouseButtonEvent;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
@@ -29,6 +32,8 @@ public class AccountLinkingScreen extends Screen {
     private ScheduledExecutorService pollExecutor = null;
     private CustomButton linkBtn = null;
     private CustomButton copyUrlBtn = null;
+    private CustomTextField manualKeyField = null;
+    private CustomButton applyKeyBtn = null;
 
     public AccountLinkingScreen(Screen parent) {
         super(Component.literal("Link Your Account"));
@@ -58,6 +63,20 @@ public class AccountLinkingScreen extends Screen {
                 Component.literal("Copy URL"), b -> copyAuthUrl());
         copyUrlBtn.visible = false;
         addRenderableWidget(copyUrlBtn);
+
+        int fieldW = Math.min(240, this.width - 80), applyW = 50;
+        int fieldX = cx - (fieldW + applyW + 4) / 2;
+        manualKeyField = new CustomTextField(minecraft, fieldX, btnY + 60, fieldW, 16, Component.empty());
+        manualKeyField.setHint(Component.literal("Paste save key here..."));
+        manualKeyField.setMaxLength(128);
+        manualKeyField.setOnEnterPressed(this::applyManualKey);
+        manualKeyField.visible = false;
+        addRenderableWidget(manualKeyField);
+
+        applyKeyBtn = new CustomButton(fieldX + fieldW + 4, btnY + 60, applyW, 16,
+                Component.literal("Apply"), b -> applyManualKey());
+        applyKeyBtn.visible = false;
+        addRenderableWidget(applyKeyBtn);
 
         if (hasKey)
             networkManager.setApiKey(apiKey);
@@ -104,6 +123,18 @@ public class AccountLinkingScreen extends Screen {
         }
     }
 
+    private void applyManualKey() {
+        if (manualKeyField == null)
+            return;
+        String key = manualKeyField.getValue().trim();
+        if (key.isEmpty()) {
+            toastManager.showError("Paste your save key first.");
+            return;
+        }
+        stopPolling();
+        completeLinking(key);
+    }
+
     private void startOAuthFlow() {
         if (isLinking)
             return;
@@ -135,6 +166,10 @@ public class AccountLinkingScreen extends Screen {
                         linkBtn.visible = false;
                     if (copyUrlBtn != null)
                         copyUrlBtn.visible = true;
+                    if (manualKeyField != null)
+                        manualKeyField.visible = true;
+                    if (applyKeyBtn != null)
+                        applyKeyBtn.visible = true;
                     linkingStatus = "Waiting for approval...";
                     try {
                         net.minecraft.util.Util.getPlatform().openUri(new java.net.URI(authUrl));
@@ -191,12 +226,14 @@ public class AccountLinkingScreen extends Screen {
                 stopPolling();
                 isLinking = false;
                 linkingStatus = "";
+                resetFlowUI();
             });
             case "cancelled" -> {
                 mc.execute(() -> {
                     stopPolling();
                     isLinking = false;
                     linkingStatus = "\u00a7cCancelled";
+                    resetFlowUI();
                 });
                 CompletableFuture.delayedExecutor(3, TimeUnit.SECONDS)
                         .execute(() -> mc.execute(() -> linkingStatus = ""));
@@ -351,10 +388,19 @@ public class AccountLinkingScreen extends Screen {
                 context.centeredText(font,
                         Component.literal("Browser didn't open? Copy the URL and paste it manually."),
                         cx, btnY + 30, 0xFF888888);
+                context.centeredText(font,
+                        Component.literal("Or paste your save key manually if the mod didn't receive it:"),
+                        cx, btnY + 44, 0xFF888888);
             }
         }
 
         toastManager.render(context, delta, mouseX, mouseY);
+    }
+
+    @Override
+    public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
+        if (toastManager.mouseClicked(click, false)) return true;
+        return super.mouseClicked(click, doubled);
     }
 
     @Override
@@ -365,5 +411,13 @@ public class AccountLinkingScreen extends Screen {
     @Override
     public void onClose() {
         goBack();
+    }
+
+    private void resetFlowUI() {
+        pendingAuthUrl = null;
+        if (linkBtn != null) linkBtn.visible = true;
+        if (copyUrlBtn != null) copyUrlBtn.visible = false;
+        if (manualKeyField != null) manualKeyField.visible = false;
+        if (applyKeyBtn != null) applyKeyBtn.visible = false;
     }
 }

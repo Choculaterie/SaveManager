@@ -61,6 +61,7 @@ public class SaveManagerScreen extends Screen {
     private long quotaBytes = 5L * 1024L * 1024L * 1024L;
     private boolean quotaLoading = false;
     private static final TransferState ACTIVE = new TransferState();
+    private static volatile SaveManagerScreen activeScreen = null;
     private String autoUploadWorld = null;
     private boolean closed = false;
     private String starTooltipText = null;
@@ -153,6 +154,19 @@ public class SaveManagerScreen extends Screen {
             return;
         }
         networkManager.setApiKey(apiKey);
+        activeScreen = this;
+
+        if (ACTIVE.isActive()) {
+            localLoading = false;
+            cloudLoading = false;
+            quotaLoading = false;
+            localSaves.addAll(cachedLocalSaves);
+            cloudSaves.addAll(cachedCloudSaves);
+            quotaFormatted = cachedQuotaFormatted;
+            quotaBytes = parseQuotaBytes(cachedQuotaFormatted);
+            return;
+        }
+
         quotaFormatted = cachedQuotaFormatted;
         quotaBytes = parseQuotaBytes(cachedQuotaFormatted);
 
@@ -169,6 +183,15 @@ public class SaveManagerScreen extends Screen {
             cloudSaves.addAll(cachedCloudSaves);
             cloudLoading = false;
         }
+    }
+
+    private static void runOnActive(java.util.function.Consumer<SaveManagerScreen> action) {
+        SaveManagerScreen s = activeScreen;
+        if (s == null) return;
+        net.minecraft.client.Minecraft.getInstance().execute(() -> {
+            SaveManagerScreen cur = activeScreen;
+            if (cur != null && !cur.closed) action.accept(cur);
+        });
     }
 
     private CustomButton addBtn(int x, int y, int w, int h,
@@ -347,15 +370,17 @@ public class SaveManagerScreen extends Screen {
             } catch (Exception ex) {
                 String msg = extractErrorMessage(ex);
                 SaveManagerMod.LOGGER.warn("Zip failed - {}", msg);
-                runOnClient(() -> {
-                    ACTIVE.upActive = false;
-                    ACTIVE.zipping = false;
-                    localLoading = false;
-                    toastManager.showError(msg);
+                ACTIVE.upActive = false;
+                ACTIVE.zipping = false;
+                runOnActive(sc -> {
+                    sc.localLoading = false;
+                    sc.toastManager.showError(msg);
                 });
                 return;
             }
-            runOnClient(() -> startUpload(zip, s.worldName));
+            final Path finalZip = zip;
+            final String finalName = s.worldName;
+            runOnActive(sc -> sc.startUpload(finalZip, finalName));
         }, "SaveManager-zip").start();
     }
 
@@ -372,37 +397,38 @@ public class SaveManagerScreen extends Screen {
                 if (total > 0)
                     ACTIVE.total = total;
                 ACTIVE.updateSpeed();
-            }).whenComplete((json, err) -> runOnClient(() -> {
-                try {
-                    Files.deleteIfExists(zipFile);
-                } catch (Throwable ignored) {
-                }
+            }).whenComplete((json, err) -> {
+                try { Files.deleteIfExists(zipFile); } catch (Throwable ignored) {}
                 ACTIVE.upActive = false;
                 ACTIVE.zipping = false;
-                localLoading = false;
                 if (err != null) {
                     String msg = extractErrorMessage(err);
                     SaveManagerMod.LOGGER.warn("Upload failed - {}", msg);
-                    toastManager.showError(msg);
+                    runOnActive(sc -> {
+                        sc.localLoading = false;
+                        sc.toastManager.showError(msg);
+                    });
                 } else {
-                    toastManager.showSuccess("Upload complete: " + worldName);
-                    LocalSave uploaded = localSaves.stream()
-                            .filter(s -> s.worldName.equals(worldName)).findFirst().orElse(null);
-                    if (uploaded != null)
-                        WatchManager.updateLastKnown(worldName, uploaded.dir);
-                    WatchManager.clearPendingNotification(worldName);
-                    fetchLocalSaves();
-                    fetchCloudSaves();
+                    runOnActive(sc -> {
+                        sc.localLoading = false;
+                        sc.toastManager.showSuccess("Upload complete: " + worldName);
+                        LocalSave uploaded = sc.localSaves.stream()
+                                .filter(s -> s.worldName.equals(worldName)).findFirst().orElse(null);
+                        if (uploaded != null)
+                            WatchManager.updateLastKnown(worldName, uploaded.dir);
+                        WatchManager.clearPendingNotification(worldName);
+                        sc.fetchLocalSaves();
+                        sc.fetchCloudSaves();
+                    });
                 }
-            }));
+            });
         } catch (Throwable t) {
-            try {
-                Files.deleteIfExists(zipFile);
-            } catch (Throwable ignored) {
-            }
+            try { Files.deleteIfExists(zipFile); } catch (Throwable ignored) {}
             ACTIVE.upActive = false;
-            localLoading = false;
-            toastManager.showError("Upload failed");
+            runOnActive(sc -> {
+                sc.localLoading = false;
+                sc.toastManager.showError("Upload failed");
+            });
         }
     }
 
@@ -462,13 +488,13 @@ public class SaveManagerScreen extends Screen {
             if (err != null) {
                 String msg = extractErrorMessage(err);
                 SaveManagerMod.LOGGER.warn("Download failed - {}", msg);
-                runOnClient(() -> {
-                    cloudLoading = false;
-                    toastManager.showError(msg);
+                runOnActive(sc -> {
+                    sc.cloudLoading = false;
+                    sc.toastManager.showError(msg);
                 });
                 return;
             }
-            runOnClient(() -> ACTIVE.unzipping = true);
+            net.minecraft.client.Minecraft.getInstance().execute(() -> ACTIVE.unzipping = true);
             String baseName = sanitizeFolderName(s.worldName);
             if (baseName.isEmpty())
                 baseName = "world";
@@ -478,32 +504,20 @@ public class SaveManagerScreen extends Screen {
                 deleteDirectoryRecursively(targetBase);
                 Files.createDirectories(targetBase);
                 unzipSmart(zipPath, targetBase);
-                runOnClient(() -> {
-                    toastManager.showSuccess("Download complete");
-                    fetchLocalSaves();
+                runOnActive(sc -> {
+                    sc.toastManager.showSuccess("Download complete");
+                    sc.fetchLocalSaves();
                 });
             } catch (Exception ex) {
                 String msg = extractErrorMessage(ex);
                 SaveManagerMod.LOGGER.warn("Unzip failed - {}", msg);
-                runOnClient(() -> toastManager.showError(msg));
+                runOnActive(sc -> sc.toastManager.showError(msg));
             } finally {
-                try {
-                    Files.deleteIfExists(zipPath);
-                } catch (Exception ignored) {
-                }
-                try {
-                    Files.deleteIfExists(tmpDir);
-                } catch (Exception ignored) {
-                }
-                try {
-                    if (Files.exists(tmpDir))
-                        deleteDirectoryRecursively(tmpDir);
-                } catch (Exception ignored) {
-                }
-                runOnClient(() -> {
-                    ACTIVE.unzipping = false;
-                    cloudLoading = false;
-                });
+                try { Files.deleteIfExists(zipPath); } catch (Exception ignored) {}
+                try { Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
+                try { if (Files.exists(tmpDir)) deleteDirectoryRecursively(tmpDir); } catch (Exception ignored) {}
+                ACTIVE.unzipping = false;
+                runOnActive(sc -> sc.cloudLoading = false);
             }
         });
     }
@@ -810,11 +824,8 @@ public class SaveManagerScreen extends Screen {
 
     private void closeScreen() {
         closed = true;
+        activeScreen = null;
         autoUploadWorld = null;
-        ACTIVE.upActive = false;
-        ACTIVE.dlActive = false;
-        ACTIVE.zipping = false;
-        ACTIVE.unzipping = false;
         Screen dest;
         if (parent instanceof SelectWorldScreen) {
             Screen grandParent = ((SelectWorldScreenAccessor) parent).getParentScreen();
