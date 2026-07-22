@@ -1,5 +1,1 @@
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
-export PATH=$JAVA_HOME/bin:$PATH
-
-./gradlew clean build -x test
-./gradlew remapJar
+JAVA_HOME=/home/choculat/.gradle/jdks/eclipse_adoptium-21-amd64-linux.2 ./gradlew build

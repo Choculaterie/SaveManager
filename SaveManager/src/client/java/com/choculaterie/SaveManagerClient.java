@@ -71,7 +71,7 @@ public class SaveManagerClient implements ClientModInitializer {
                         hoveredTooltipWorld = folderName;
 
                     if (clicked && inBounds) {
-                        Minecraft.getInstance().setScreen(new SaveManagerScreen(s, folderName));
+                        Minecraft.getInstance().gui.setScreen(new SaveManagerScreen(s, folderName));
                         return;
                     }
                 }

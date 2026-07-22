@@ -86,7 +86,7 @@ public class AccountLinkingScreen extends Screen {
         if (hasKey) {
             networkManager.setApiKey(null);
             ConfigManager.clearApiKey();
-            minecraft.setScreen(new AccountLinkingScreen(parent));
+            minecraft.gui.setScreen(new AccountLinkingScreen(parent));
         } else {
             startOAuthFlow();
         }
@@ -99,7 +99,7 @@ public class AccountLinkingScreen extends Screen {
         String apiKey = ConfigManager.loadApiKey();
         if (parent instanceof SaveManagerScreen sms) {
             if (apiKey != null && !apiKey.isBlank()) {
-                minecraft.setScreen(parent);
+                minecraft.gui.setScreen(parent);
             } else {
                 navigateToWorldSelect(sms.getParent());
             }
@@ -110,9 +110,9 @@ public class AccountLinkingScreen extends Screen {
 
     private void navigateToWorldSelect(Screen target) {
         if (target instanceof SelectWorldScreen) {
-            minecraft.setScreen(target);
+            minecraft.gui.setScreen(target);
         } else {
-            minecraft.setScreen(new SelectWorldScreen(ScreenUtils.resolveRootParent(target)));
+            minecraft.gui.setScreen(new SelectWorldScreen(ScreenUtils.resolveRootParent(target)));
         }
     }
 
@@ -338,7 +338,7 @@ public class AccountLinkingScreen extends Screen {
             } else {
                 screen = new SaveManagerScreen(parent instanceof SelectWorldScreen ? parent : parent);
             }
-            mc.setScreen(screen);
+            mc.gui.setScreen(screen);
             screen.refresh();
         });
     }
