@@ -123,7 +123,7 @@ public class SaveManagerScreen extends Screen {
         refreshBtn = addBtn(margin + btnSize + 5, margin, btnSize, btnSize, "\uD83D\uDD04", b -> refresh());
         addBtn(this.width - margin - btnSize * 2 - 5, margin, btnSize, btnSize, "\uD83D\uDCC1", b -> openSavesFolder());
         addBtn(this.width - margin - btnSize, margin, btnSize, btnSize, "\u2699",
-                b -> minecraft.gui.setScreen(new AccountLinkingScreen(this)));
+                b -> minecraft.setScreen(new AccountLinkingScreen(this)));
 
         int totalW = this.width - 60;
         int panelW = (totalW - PANEL_GAP) / 2;
@@ -150,7 +150,7 @@ public class SaveManagerScreen extends Screen {
 
         String apiKey = ConfigManager.loadApiKey();
         if (apiKey == null || apiKey.isBlank()) {
-            minecraft.gui.setScreen(new AccountLinkingScreen(this));
+            minecraft.setScreen(new AccountLinkingScreen(this));
             return;
         }
         networkManager.setApiKey(apiKey);
@@ -328,7 +328,7 @@ public class SaveManagerScreen extends Screen {
         if (localSelectedIndex < 0 || localSelectedIndex >= localSaves.size())
             return;
         if (networkManager.getApiKey() == null || networkManager.getApiKey().isBlank()) {
-            minecraft.gui.setScreen(new AccountLinkingScreen(this));
+            minecraft.setScreen(new AccountLinkingScreen(this));
             return;
         }
         LocalSave s = localSaves.get(localSelectedIndex);
@@ -336,7 +336,7 @@ public class SaveManagerScreen extends Screen {
         networkManager.listWorldSaveNames().whenComplete((names, err) -> runOnClient(() -> {
             if (err != null) {
                 localLoading = false;
-                minecraft.gui.setScreen(new AccountLinkingScreen(this));
+                minecraft.setScreen(new AccountLinkingScreen(this));
                 return;
             }
             String sanitized = sanitizeFolderName(s.worldName);
@@ -833,7 +833,7 @@ public class SaveManagerScreen extends Screen {
         } else {
             dest = new SelectWorldScreen(java.util.Objects.requireNonNull(ScreenUtils.resolveRootParent(parent)));
         }
-        minecraft.gui.setScreen(dest);
+        minecraft.setScreen(dest);
     }
 
     private void openSavesFolder() {

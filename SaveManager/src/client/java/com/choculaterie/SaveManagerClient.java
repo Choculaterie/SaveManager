@@ -1,11 +1,13 @@
 package com.choculaterie;
 
+import com.choculaterie.compat.Legacy4JCompat;
 import com.choculaterie.gui.SaveManagerScreen;
 import com.choculaterie.mixin.SelectWorldScreenAccessor;
 import com.choculaterie.mixin.WorldEntryAccessor;
 import com.choculaterie.util.WatchManager;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.client.gui.screens.worldselection.WorldSelectionList;
@@ -20,6 +22,10 @@ public class SaveManagerClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         SaveManagerMod.LOGGER.info("Initializing Save Manager Client");
+
+        if (FabricLoader.getInstance().isModLoaded("legacy")) {
+            Legacy4JCompat.register();
+        }
 
         ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
             if (!(screen instanceof SelectWorldScreen))
@@ -71,7 +77,7 @@ public class SaveManagerClient implements ClientModInitializer {
                         hoveredTooltipWorld = folderName;
 
                     if (clicked && inBounds) {
-                        Minecraft.getInstance().gui.setScreen(new SaveManagerScreen(s, folderName));
+                        Minecraft.getInstance().setScreen(new SaveManagerScreen(s, folderName));
                         return;
                     }
                 }
