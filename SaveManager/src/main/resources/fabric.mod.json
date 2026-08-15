@@ -7,6 +7,9 @@
   "authors": [
     "Choculat"
   ],
+  "contributors": [
+      "soller"
+  ],
   "contact": {
     "homepage": "https://github.com/Choculaterie/SaveManager",
     "sources": "https://github.com/Choculaterie/SaveManager"
