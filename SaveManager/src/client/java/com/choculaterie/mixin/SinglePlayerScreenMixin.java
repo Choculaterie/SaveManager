@@ -1,8 +1,8 @@
 package com.choculaterie.mixin;
 
 import com.choculaterie.gui.SaveManagerScreen;
-import com.choculaterie.util.WatchManager;
-import com.choculaterie.widget.CustomButton;
+import com.choculaterie.vanilib.util.WatchManager;
+import com.choculaterie.vanilib.gui.widget.CustomButton;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;

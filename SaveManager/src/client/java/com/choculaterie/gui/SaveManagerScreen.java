@@ -4,13 +4,13 @@ import com.choculaterie.SaveManagerMod;
 import com.choculaterie.mixin.SelectWorldScreenAccessor;
 import com.choculaterie.network.NetworkManager;
 import com.choculaterie.util.ConfigManager;
-import com.choculaterie.util.ScreenUtils;
-import com.choculaterie.util.WatchManager;
-import com.choculaterie.widget.ConfirmPopup;
-import com.choculaterie.widget.CustomButton;
-import com.choculaterie.widget.LoadingSpinner;
-import com.choculaterie.widget.ScrollBar;
-import com.choculaterie.widget.ToastManager;
+import com.choculaterie.vanilib.util.ScreenUtils;
+import com.choculaterie.vanilib.util.WatchManager;
+import com.choculaterie.vanilib.gui.widget.ConfirmPopup;
+import com.choculaterie.vanilib.gui.widget.CustomButton;
+import com.choculaterie.vanilib.gui.widget.LoadingSpinner;
+import com.choculaterie.vanilib.gui.widget.ScrollBar;
+import com.choculaterie.vanilib.gui.widget.ToastManager;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -26,7 +26,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
-import static com.choculaterie.util.FormatUtils.*;
+import static com.choculaterie.vanilib.util.FormatUtils.*;
 
 public class SaveManagerScreen extends Screen {
     private static final int ROW_HEIGHT = 24;
@@ -106,7 +106,7 @@ public class SaveManagerScreen extends Screen {
     public SaveManagerScreen(Screen parent) {
         super(Component.literal("Save Manager"));
         this.parent = parent;
-        this.toastManager = new ToastManager(null);
+        this.toastManager = new ToastManager(net.minecraft.client.Minecraft.getInstance());
         this.spinner = new LoadingSpinner(0, 0);
     }
 
@@ -117,7 +117,6 @@ public class SaveManagerScreen extends Screen {
 
     @Override
     protected void init() {
-        toastManager.initClient(minecraft);
         int btnSize = 20, margin = 6;
         addBtn(margin, margin, btnSize, btnSize, "\u2190", b -> closeScreen());
         refreshBtn = addBtn(margin + btnSize + 5, margin, btnSize, btnSize, "\uD83D\uDD04", b -> refresh());
@@ -197,7 +196,6 @@ public class SaveManagerScreen extends Screen {
     private CustomButton addBtn(int x, int y, int w, int h,
             @org.checkerframework.checker.nullness.qual.NonNull String label, Button.OnPress onPress) {
         CustomButton btn = new CustomButton(x, y, w, h, Component.literal(label), onPress);
-        btn.setToastManager(toastManager);
         addRenderableWidget(btn);
         return btn;
     }
@@ -261,7 +259,7 @@ public class SaveManagerScreen extends Screen {
                     cloudLoading = false;
                     cloudSaves.clear();
                     if (msg.contains("account must be linked"))
-                        toastManager.showError(msg, "Profile -> Edit profile -> Link");
+                        toastManager.showError(msg + " (Profile -> Edit profile -> Link)");
                     else
                         toastManager.showError(msg);
                 });
@@ -667,7 +665,7 @@ public class SaveManagerScreen extends Screen {
         int end = Math.min(scrollOffset + visibleRows, saves.size());
         for (int i = scrollOffset; i < end; i++) {
             int ry = listY + (i - scrollOffset) * ROW_HEIGHT;
-            if (!blockHover && i == selectedIndex)
+            if (i == selectedIndex)
                 ctx.fill(panelX, ry - 1, panelX + panelW, ry + ROW_HEIGHT - 2, 0x66FFFFFF);
 
             String worldName, info;
@@ -681,7 +679,8 @@ public class SaveManagerScreen extends Screen {
                 int starColor = watching ? 0xFFFFDD44 : 0xFF383838;
                 int starX = panelX + panelW - 12, starY = ry + 7;
                 ctx.text(font, Component.literal("\u2605"), starX, starY, starColor);
-                if (mouseX >= starX - 1 && mouseX < starX + 8 && mouseY >= starY && mouseY < starY + 9)
+                if (!blockHover && mouseX >= starX - 1 && mouseX < starX + 8 && mouseY >= starY
+                        && mouseY < starY + 9)
                     starTooltipText = watching ? "Remove from favorite" : "Add to favorite";
             } else {
                 CloudSave s = (CloudSave) saves.get(i);
@@ -743,8 +742,8 @@ public class SaveManagerScreen extends Screen {
             boolean consumed) {
         double mx = click.x(), my = click.y();
         if (confirmPopup != null)
-            return confirmPopup.mouseClicked(click, consumed);
-        if (toastManager.mouseClicked(click, consumed))
+            return confirmPopup.mouseClicked(click.x(), click.y(), click.button());
+        if (toastManager.mouseClicked(click.x(), click.y()))
             return true;
         if (toastManager.isMouseOverToast(mx, my) || consumed)
             return true;

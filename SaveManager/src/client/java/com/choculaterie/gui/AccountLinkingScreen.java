@@ -2,10 +2,10 @@ package com.choculaterie.gui;
 
 import com.choculaterie.network.NetworkManager;
 import com.choculaterie.util.ConfigManager;
-import com.choculaterie.util.ScreenUtils;
-import com.choculaterie.widget.CustomButton;
-import com.choculaterie.widget.CustomTextField;
-import com.choculaterie.widget.ToastManager;
+import com.choculaterie.vanilib.util.ScreenUtils;
+import com.choculaterie.vanilib.gui.widget.CustomButton;
+import com.choculaterie.vanilib.gui.widget.CustomTextField;
+import com.choculaterie.vanilib.gui.widget.ToastManager;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
@@ -38,12 +38,11 @@ public class AccountLinkingScreen extends Screen {
     public AccountLinkingScreen(Screen parent) {
         super(Component.literal("Link Your Account"));
         this.parent = parent;
-        this.toastManager = new ToastManager(null);
+        this.toastManager = new ToastManager(net.minecraft.client.Minecraft.getInstance());
     }
 
     @Override
     protected void init() {
-        toastManager.initClient(minecraft);
 
         int btnSize = 20, margin = 6;
         addRenderableWidget(
@@ -67,7 +66,7 @@ public class AccountLinkingScreen extends Screen {
         int fieldW = Math.min(240, this.width - 80), applyW = 50;
         int fieldX = cx - (fieldW + applyW + 4) / 2;
         manualKeyField = new CustomTextField(minecraft, fieldX, btnY + 60, fieldW, 16, Component.empty());
-        manualKeyField.setHint(Component.literal("Paste save key here..."));
+        manualKeyField.setPlaceholder(Component.literal("Paste save key here..."));
         manualKeyField.setMaxLength(128);
         manualKeyField.setOnEnterPressed(this::applyManualKey);
         manualKeyField.visible = false;
@@ -399,7 +398,7 @@ public class AccountLinkingScreen extends Screen {
 
     @Override
     public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
-        if (toastManager.mouseClicked(click, false)) return true;
+        if (toastManager.mouseClicked(click.x(), click.y())) return true;
         return super.mouseClicked(click, doubled);
     }
 

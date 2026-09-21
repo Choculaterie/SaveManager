@@ -19,6 +19,7 @@ repositories {
     maven { url "https://maven.fabricmc.net/" }
 	mavenCentral()
 	maven { url 'https://repo.spongepowered.org/maven' }
+	mavenLocal()
 }
 
 loom {
@@ -41,6 +42,8 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	implementation "com.choculaterie:vanilib:${project.vanilib_version}"
 }
 
 processResources {
