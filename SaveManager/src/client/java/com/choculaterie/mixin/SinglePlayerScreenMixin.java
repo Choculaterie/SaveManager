@@ -2,7 +2,7 @@ package com.choculaterie.mixin;
 
 import com.choculaterie.gui.SaveManagerScreen;
 import com.choculaterie.vanilib.util.WatchManager;
-import com.choculaterie.vanilib.gui.widget.CustomButton;
+import com.choculaterie.gui.CloudButton;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
@@ -24,7 +24,7 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
     @Inject(method = "init", at = @At("TAIL"), remap = false)
     private void savemanager$init(CallbackInfo ci) {
-        addRenderableWidget(new CustomButton(6, 6, 20, 20, Component.literal("\u2601"),
+        addRenderableWidget(new CloudButton(6, 6, 20, 20,
                 b -> this.minecraft.gui.setScreen(new SaveManagerScreen((Screen) (Object) this))));
 
         Minecraft mc = Minecraft.getInstance();

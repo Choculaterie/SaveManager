@@ -8,7 +8,6 @@ import com.choculaterie.vanilib.util.ScreenUtils;
 import com.choculaterie.vanilib.util.WatchManager;
 import com.choculaterie.vanilib.gui.widget.ConfirmPopup;
 import com.choculaterie.vanilib.gui.widget.CustomButton;
-import com.choculaterie.vanilib.gui.widget.LoadingSpinner;
 import com.choculaterie.vanilib.gui.widget.ScrollBar;
 import com.choculaterie.vanilib.gui.widget.ToastManager;
 import com.google.gson.JsonArray;
@@ -30,11 +29,9 @@ import static com.choculaterie.vanilib.util.FormatUtils.*;
 
 public class SaveManagerScreen extends Screen {
     private static final int ROW_HEIGHT = 24;
-    private static final int VISIBLE_ROWS = 8;
     private static final int PANEL_GAP = 20;
-    private static final int STATUS_RESERVED_HEIGHT = 48;
-    private static final int LIST_STATUS_GAP = 8;
-    private static final int STATUS_Y_OFFSET = 24;
+    private static final int HEADER_Y = 50;
+    private static final int LIST_GAP = 20;
     private static final long RELOAD_THRESHOLD_MS = 15 * 60 * 1000L;
 
     private static long lastLoadTimeMs = 0L;
@@ -45,7 +42,6 @@ public class SaveManagerScreen extends Screen {
     private final Screen parent;
     private final NetworkManager networkManager = new NetworkManager();
     private final ToastManager toastManager;
-    private final LoadingSpinner spinner;
     private final List<LocalSave> localSaves = new ArrayList<>();
     private final List<CloudSave> cloudSaves = new ArrayList<>();
     private ScrollBar localScrollBar, cloudScrollBar;
@@ -53,8 +49,7 @@ public class SaveManagerScreen extends Screen {
     private int localSelectedIndex = -1, cloudSelectedIndex = -1;
     private boolean localLoading = true, cloudLoading = true;
     private int localPanelX, localPanelW, cloudPanelX, cloudPanelW, listY, listH;
-    private int visibleRows = VISIBLE_ROWS;
-    private int statusY;
+    private int visibleRows = 1;
     private ConfirmPopup confirmPopup = null;
     private CustomButton uploadBtn, downloadBtn, deleteBtn, refreshBtn;
     private String quotaFormatted = "Loading";
@@ -68,6 +63,7 @@ public class SaveManagerScreen extends Screen {
 
     private static final class TransferState {
         volatile boolean dlActive, upActive, zipping, unzipping;
+        volatile String worldName;
         volatile long bytes, total = -1L, lastBytes, lastTickNanos;
         volatile double speedBps;
 
@@ -75,7 +71,8 @@ public class SaveManagerScreen extends Screen {
             return dlActive || upActive || zipping || unzipping;
         }
 
-        void reset(boolean download) {
+        void reset(boolean download, String worldName) {
+            this.worldName = worldName;
             if (download) {
                 dlActive = true;
                 unzipping = false;
@@ -107,7 +104,6 @@ public class SaveManagerScreen extends Screen {
         super(Component.literal("Save Manager"));
         this.parent = parent;
         this.toastManager = new ToastManager(net.minecraft.client.Minecraft.getInstance());
-        this.spinner = new LoadingSpinner(0, 0);
     }
 
     public SaveManagerScreen(Screen parent, String autoUploadWorld) {
@@ -138,12 +134,9 @@ public class SaveManagerScreen extends Screen {
         deleteBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2 + btnW + 10, actionBtnY, btnW, 20, "Delete",
                 b -> onDelete());
 
-        listY = 70;
-        int statusTop = Math.max(listY + ROW_HEIGHT + LIST_STATUS_GAP, actionBtnY - STATUS_RESERVED_HEIGHT);
-        listH = Math.max(ROW_HEIGHT, statusTop - LIST_STATUS_GAP - STATUS_Y_OFFSET - listY);
-        visibleRows = Math.max(1, Math.min(VISIBLE_ROWS, listH / ROW_HEIGHT));
-        listH = visibleRows * ROW_HEIGHT;
-        statusY = listY + listH + LIST_STATUS_GAP + STATUS_Y_OFFSET;
+        listY = HEADER_Y + LIST_GAP;
+        listH = Math.max(ROW_HEIGHT, actionBtnY - LIST_GAP - listY);
+        visibleRows = Math.max(1, listH / ROW_HEIGHT);
         localScrollBar = new ScrollBar(localPanelX + localPanelW + 4, listY, listH);
         cloudScrollBar = new ScrollBar(cloudPanelX + cloudPanelW + 4, listY, listH);
 
@@ -159,6 +152,8 @@ public class SaveManagerScreen extends Screen {
             localLoading = false;
             cloudLoading = false;
             quotaLoading = false;
+            localSaves.clear();
+            cloudSaves.clear();
             localSaves.addAll(cachedLocalSaves);
             cloudSaves.addAll(cachedCloudSaves);
             quotaFormatted = cachedQuotaFormatted;
@@ -358,13 +353,18 @@ public class SaveManagerScreen extends Screen {
     }
 
     private void beginZipAndUpload(LocalSave s) {
-        ACTIVE.reset(false);
+        ACTIVE.reset(false, s.worldName);
+        if (s.sizeBytes > 0)
+            ACTIVE.total = s.sizeBytes;
         localLoading = true;
         new Thread(() -> {
             Path zip;
             try {
                 Path tempRoot = minecraft.gameDirectory.toPath().resolve("savemanager-temp");
-                zip = zipWorld(s.dir, s.worldName.replaceAll("[\\\\/:*?\"<>|]+", "_"), tempRoot);
+                zip = zipWorld(s.dir, s.worldName.replaceAll("[\\\\/:*?\"<>|]+", "_"), tempRoot, n -> {
+                    ACTIVE.bytes += n;
+                    ACTIVE.updateSpeed();
+                });
             } catch (Exception ex) {
                 String msg = extractErrorMessage(ex);
                 SaveManagerMod.LOGGER.warn("Zip failed - {}", msg);
@@ -378,7 +378,7 @@ public class SaveManagerScreen extends Screen {
             }
             final Path finalZip = zip;
             final String finalName = s.worldName;
-            runOnActive(sc -> sc.startUpload(finalZip, finalName));
+            net.minecraft.client.Minecraft.getInstance().execute(() -> startUpload(finalZip, finalName));
         }, "SaveManager-zip").start();
     }
 
@@ -472,7 +472,7 @@ public class SaveManagerScreen extends Screen {
             return;
         }
 
-        ACTIVE.reset(true);
+        ACTIVE.reset(true, s.worldName);
         if (s.fileSizeBytes > 0)
             ACTIVE.total = s.fileSizeBytes;
 
@@ -602,29 +602,14 @@ public class SaveManagerScreen extends Screen {
             ctx.centeredText(font, Component.literal(java.util.Objects.requireNonNull(computeQuotaLine())), cx, 22,
                     0xFFAAAAAA);
 
-        ctx.text(font, Component.literal("Local Saves"), localPanelX, 50, 0xFFFFFFFF);
-        ctx.text(font, Component.literal("Cloud Saves"), cloudPanelX, 50, 0xFFFFFFFF);
+        ctx.text(font, Component.literal("Local Saves"), localPanelX, HEADER_Y, 0xFFFFFFFF);
+        ctx.text(font, Component.literal("Cloud Saves"), cloudPanelX, HEADER_Y, 0xFFFFFFFF);
         starTooltipText = null;
         renderSavePanel(ctx, mouseX, mouseY, delta, true);
         renderSavePanel(ctx, mouseX, mouseY, delta, false);
         if (starTooltipText != null) {
             ctx.setComponentTooltipForNextFrame(font,
                     List.of(Component.literal(starTooltipText)), mouseX, mouseY);
-        }
-
-        if (ACTIVE.isActive()) {
-            if (ACTIVE.zipping || ACTIVE.unzipping || ACTIVE.bytes <= 0L) {
-                spinner.setPosition(cx - 16, statusY);
-                spinner.extractRenderState(ctx, mouseX, mouseY, delta);
-                String msg = ACTIVE.zipping ? "Zipping..." : ACTIVE.unzipping ? "Unzipping..." : "Preparing...";
-                ctx.centeredText(font, Component.literal(msg), cx, statusY + 40, 0xFFFFFFFF);
-            } else {
-                renderProgressBar(ctx, cx, statusY);
-            }
-        } else if (localLoading || cloudLoading) {
-            spinner.setPosition(cx - 16, statusY);
-            spinner.extractRenderState(ctx, mouseX, mouseY, delta);
-            ctx.centeredText(font, Component.literal("Loading..."), cx, statusY + 40, 0xFFFFFFFF);
         }
 
         // Re-render action buttons on top of panels so they're always clickable
@@ -662,11 +647,9 @@ public class SaveManagerScreen extends Screen {
         }
 
         ctx.enableScissor(panelX, listY, panelX + panelW, listY + listH);
-        int end = Math.min(scrollOffset + visibleRows, saves.size());
+        int end = Math.min(scrollOffset + visibleRows + 1, saves.size());
         for (int i = scrollOffset; i < end; i++) {
             int ry = listY + (i - scrollOffset) * ROW_HEIGHT;
-            if (i == selectedIndex)
-                ctx.fill(panelX, ry - 1, panelX + panelW, ry + ROW_HEIGHT - 2, 0x66FFFFFF);
 
             String worldName, info;
             if (isLocal) {
@@ -675,13 +658,6 @@ public class SaveManagerScreen extends Screen {
                     continue;
                 worldName = s.worldName;
                 info = formatBytes(s.sizeBytes) + " \u2022 " + shortDateMillis(s.lastModified);
-                boolean watching = WatchManager.isWatching(worldName);
-                int starColor = watching ? 0xFFFFDD44 : 0xFF383838;
-                int starX = panelX + panelW - 12, starY = ry + 7;
-                ctx.text(font, Component.literal("\u2605"), starX, starY, starColor);
-                if (!blockHover && mouseX >= starX - 1 && mouseX < starX + 8 && mouseY >= starY
-                        && mouseY < starY + 9)
-                    starTooltipText = watching ? "Remove from favorite" : "Add to favorite";
             } else {
                 CloudSave s = (CloudSave) saves.get(i);
                 if (s == null)
@@ -689,35 +665,72 @@ public class SaveManagerScreen extends Screen {
                 worldName = s.worldName;
                 info = formatBytes(s.fileSizeBytes) + " \u2022 " + shortDate(s.updatedAt);
             }
+
+            if (isTransferring(worldName, isLocal)) {
+                renderRowProgress(ctx, panelX, panelW, ry);
+                info = transferInfo();
+            } else if (i == selectedIndex) {
+                ctx.fill(panelX, ry - 1, panelX + panelW, ry + ROW_HEIGHT - 2, 0x33FFFFFF);
+            }
+
             ctx.text(font, Component.literal(java.util.Objects.requireNonNull(safe(worldName))), panelX + 4, ry + 2,
                     0xFFDDDDDD);
             ctx.text(font, Component.literal(java.util.Objects.requireNonNull(info)), panelX + 4, ry + 12,
                     0xFF888888);
+            if (isLocal) {
+                boolean watching = WatchManager.isWatching(worldName);
+                int starColor = watching ? 0xFFFFDD44 : 0xFF383838;
+                int starX = panelX + panelW - 12, starY = ry + 7;
+                ctx.text(font, Component.literal("\u2605"), starX, starY, starColor);
+                if (!blockHover && mouseX >= starX - 1 && mouseX < starX + 8 && mouseY >= starY
+                        && mouseY < starY + 9)
+                    starTooltipText = watching ? "Remove from favorite" : "Add to favorite";
+            }
             ctx.fill(panelX, ry + ROW_HEIGHT - 2, panelX + panelW, ry + ROW_HEIGHT - 1, 0x22FFFFFF);
         }
         ctx.disableScissor();
     }
 
-    private void renderProgressBar(GuiGraphicsExtractor ctx, int cx, int statusY) {
-        long bytes = ACTIVE.bytes, total = ACTIVE.total;
-        double speed = ACTIVE.speedBps;
-        int barW = Math.min(360, Math.max(180, this.width - 80));
-        int barH = 8;
-        int bx = cx - barW / 2;
-        int by = statusY + 14;
-        ctx.fill(bx, by, bx + barW, by + barH, 0xFF444444);
+    public static boolean isUploading() {
+        return ACTIVE.upActive;
+    }
+
+    public static boolean isDownloading() {
+        return ACTIVE.dlActive;
+    }
+
+    public static double transferProgress() {
+        long total = ACTIVE.total, bytes = ACTIVE.bytes;
+        return total > 0 ? Math.min(1.0, (double) bytes / total) : 0.0;
+    }
+
+    private boolean isTransferring(String worldName, boolean isLocal) {
+        return ACTIVE.isActive() && worldName.equals(ACTIVE.worldName)
+                && (isLocal ? ACTIVE.upActive : ACTIVE.dlActive);
+    }
+
+    private void renderRowProgress(GuiGraphicsExtractor ctx, int panelX, int panelW, int ry) {
+        int top = ry - 1, bot = ry + ROW_HEIGHT - 2;
+        ctx.fill(panelX, top, panelX + panelW, bot, 0x1AFFFFFF);
+        long total = ACTIVE.total;
         if (total > 0) {
-            double frac = Math.min(1.0, (double) bytes / total);
-            ctx.fill(bx, by, bx + (int) (barW * frac), by + barH, 0xFFCCCCCC);
-            ctx.centeredText(font,
-                    Component.literal((int) Math.min(100, bytes * 100.0 / total) + "%"), cx, by - 10, 0xFFFFFFFF);
-            String info = formatBytes(bytes) + " / " + formatBytes(total);
-            if (speed > 1) {
-                long etaSec = (long) Math.ceil(Math.max(0L, total - bytes) / Math.max(1.0, speed));
-                info += " \u2022 " + formatBytes((long) speed) + "/s \u2022 ETA " + formatDuration(etaSec);
-            }
-            ctx.centeredText(font, Component.literal(info), cx, by + barH + 2, 0xFFCCCCCC);
+            double frac = Math.min(1.0, (double) ACTIVE.bytes / total);
+            ctx.fill(panelX, top, panelX + (int) (panelW * frac), bot, 0x40FFFFFF);
         }
+    }
+
+    private String transferInfo() {
+        long bytes = ACTIVE.bytes, total = ACTIVE.total;
+        if (bytes <= 0 || total <= 0)
+            return ACTIVE.zipping ? "Zipping..." : ACTIVE.unzipping ? "Unzipping..." : "Preparing...";
+        String prefix = ACTIVE.zipping ? "Zipping \u2022 " : ACTIVE.unzipping ? "Unzipping \u2022 " : "";
+        String info = prefix + formatBytes(bytes) + " / " + formatBytes(total);
+        double speed = ACTIVE.speedBps;
+        if (speed > 1) {
+            long etaSec = (long) Math.ceil(Math.max(0L, total - bytes) / Math.max(1.0, speed));
+            info += " \u2022 " + formatBytes((long) speed) + "/s \u2022 ETA " + formatDuration(etaSec);
+        }
+        return info;
     }
 
     private void updateButtonStates() {
@@ -739,13 +752,13 @@ public class SaveManagerScreen extends Screen {
     @Override
     public boolean mouseClicked(
             net.minecraft.client.input.@org.checkerframework.checker.nullness.qual.NonNull MouseButtonEvent click,
-            boolean consumed) {
+            boolean doubleClick) {
         double mx = click.x(), my = click.y();
         if (confirmPopup != null)
             return confirmPopup.mouseClicked(click.x(), click.y(), click.button());
         if (toastManager.mouseClicked(click.x(), click.y()))
             return true;
-        if (toastManager.isMouseOverToast(mx, my) || consumed)
+        if (toastManager.isMouseOverToast(mx, my))
             return true;
         if (super.mouseClicked(click, false))
             return true;
@@ -928,7 +941,8 @@ public class SaveManagerScreen extends Screen {
         }
     }
 
-    private static Path zipWorld(Path worldDir, String worldName, Path tempRoot) throws Exception {
+    private static Path zipWorld(Path worldDir, String worldName, Path tempRoot,
+            java.util.function.LongConsumer onBytes) throws Exception {
         Path zip;
         try {
             Path parent = worldDir.getParent();
@@ -959,6 +973,7 @@ public class SaveManagerScreen extends Screen {
                     zos.putNextEntry(new java.util.zip.ZipEntry(rel.toString().replace('\\', '/')));
                     Files.copy(file, zos);
                     zos.closeEntry();
+                    onBytes.accept(attrs.size());
                     return FileVisitResult.CONTINUE;
                 }
             });
