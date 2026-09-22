@@ -24,6 +24,7 @@ public class AccountLinkingScreen extends Screen {
     private final ToastManager toastManager;
 
     private String currentFlowId = null;
+    private String currentPollToken = null;
     private String pendingLinkCode = null;
     private String pendingSaveKey = null;
     private boolean isLinking = false;
@@ -150,6 +151,7 @@ public class AccountLinkingScreen extends Screen {
             }
             try {
                 currentFlowId = json.has("flowId") ? json.get("flowId").getAsString() : null;
+                currentPollToken = json.has("pollToken") ? json.get("pollToken").getAsString() : null;
                 int expiresIn = json.has("expiresInSeconds") ? json.get("expiresInSeconds").getAsInt() : 300;
                 if (currentFlowId == null) {
                     runOnClient(() -> {
@@ -175,7 +177,7 @@ public class AccountLinkingScreen extends Screen {
                     } catch (Exception ignored) {
                     }
                 });
-                startPolling(currentFlowId, expiresIn);
+                startPolling(currentFlowId, currentPollToken, expiresIn);
             } catch (Exception e) {
                 runOnClient(() -> {
                     isLinking = false;
@@ -185,7 +187,7 @@ public class AccountLinkingScreen extends Screen {
         });
     }
 
-    private void startPolling(String flowId, int timeoutSeconds) {
+    private void startPolling(String flowId, String pollToken, int timeoutSeconds) {
         stopPolling();
         pollExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "SaveManager-OAuth-Poll");
@@ -206,7 +208,7 @@ public class AccountLinkingScreen extends Screen {
                 });
                 return;
             }
-            networkManager.getOAuthFlowStatus(flowId).whenComplete((json, err) -> {
+            networkManager.getOAuthFlowStatus(flowId, pollToken).whenComplete((json, err) -> {
                 if (err != null)
                     return;
                 try {
@@ -325,6 +327,7 @@ public class AccountLinkingScreen extends Screen {
         pendingLinkCode = null;
         pendingSaveKey = null;
         currentFlowId = null;
+        currentPollToken = null;
 
         networkManager.setApiKey(saveKey);
         ConfigManager.saveApiKey(saveKey);

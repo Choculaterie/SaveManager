@@ -56,11 +56,16 @@ public class NetworkManager {
     }
 
     public CompletableFuture<JsonObject> getOAuthFlowStatus(String flowId) {
-        HttpRequest req = HttpRequest.newBuilder()
+        return getOAuthFlowStatus(flowId, null);
+    }
+
+    public CompletableFuture<JsonObject> getOAuthFlowStatus(String flowId, String pollToken) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(BASE_URL + API_BASE_PATH + "/flow/status/" + flowId))
-                .GET()
-                .build();
-        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .GET();
+        if (pollToken != null && !pollToken.isEmpty())
+            builder.header("X-Flow-Token", pollToken);
+        return httpClient.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString())
                 .thenApply(this::handleJsonResponse);
     }
 
