@@ -3,6 +3,10 @@ package com.choculaterie.gui;
 import com.choculaterie.SaveManagerMod;
 import com.choculaterie.mixin.SelectWorldScreenAccessor;
 import com.choculaterie.network.NetworkManager;
+import com.choculaterie.sync.AutoSync;
+import com.choculaterie.sync.SyncState;
+import com.choculaterie.sync.WorldManifest;
+import com.choculaterie.util.AccountState;
 import com.choculaterie.util.ConfigManager;
 import com.choculaterie.vanilib.util.ScreenUtils;
 import com.choculaterie.vanilib.util.WatchManager;
@@ -20,9 +24,13 @@ import net.minecraft.network.chat.Component;
 
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 import static com.choculaterie.vanilib.util.FormatUtils.*;
@@ -167,12 +175,11 @@ public class SaveManagerScreen extends Screen {
         boolean shouldReloadCloud = (System.currentTimeMillis() - lastLoadTimeMs) > RELOAD_THRESHOLD_MS
                 || cachedCloudSaves.isEmpty();
         fetchLocalSaves();
+        quotaLoading = true;
+        fetchQuotaInfo();
         if (shouldReloadCloud) {
-            quotaLoading = true;
             fetchCloudSaves();
-            fetchQuotaInfo();
         } else {
-            quotaLoading = false;
             cloudSaves.clear();
             cloudSaves.addAll(cachedCloudSaves);
             cloudLoading = false;
@@ -303,6 +310,7 @@ public class SaveManagerScreen extends Screen {
                 return;
             }
             try {
+                AccountState.update(json);
                 String quota = json.has("quotaFormatted") ? json.get("quotaFormatted").getAsString() : "5 GB";
                 quotaFormatted = quota;
                 cachedQuotaFormatted = quota;
@@ -353,6 +361,10 @@ public class SaveManagerScreen extends Screen {
     }
 
     private void beginZipAndUpload(LocalSave s) {
+        beginDeltaSync(s);
+    }
+
+    private void beginLegacyZipUpload(LocalSave s) {
         ACTIVE.reset(false, s.worldName);
         if (s.sizeBytes > 0)
             ACTIVE.total = s.sizeBytes;
@@ -380,6 +392,106 @@ public class SaveManagerScreen extends Screen {
             final String finalName = s.worldName;
             net.minecraft.client.Minecraft.getInstance().execute(() -> startUpload(finalZip, finalName));
         }, "SaveManager-zip").start();
+    }
+
+    private void beginDeltaSync(LocalSave s) {
+        ACTIVE.reset(false, s.worldName);
+        ACTIVE.zipping = true;
+        localLoading = true;
+
+        final String worldName = s.worldName;
+        final Path worldDir = s.dir;
+        final String parentVersionId = headVersionFor(worldName);
+
+        new Thread(() -> {
+            AutoSync.acquireForManual();
+            try {
+                SaveManagerMod.LOGGER.info("[SM] manual: hashing '{}' (parent={})",
+                        worldName, parentVersionId == null ? "none" : parentVersionId);
+                List<WorldManifest.Entry> entries = WorldManifest.build(worldDir, (done, total) -> {
+                    ACTIVE.bytes = done;
+                    ACTIVE.total = total;
+                    ACTIVE.updateSpeed();
+                });
+                if (entries.isEmpty())
+                    throw new IOException("World contains no files.");
+
+                SaveManagerMod.LOGGER.info("[SM] manual: manifest {} file(s), calling begin", entries.size());
+                JsonObject begun = networkManager.syncBegin(worldName, parentVersionId, entries).join();
+                String sessionId = begun.get("sessionId").getAsString();
+
+                Set<String> missingHashes = new HashSet<>();
+                for (var el : begun.getAsJsonArray("missing"))
+                    missingHashes.add(el.getAsString().toLowerCase(Locale.ROOT));
+
+                List<WorldManifest.Entry> toSend = new ArrayList<>();
+                Set<String> queued = new HashSet<>();
+                for (WorldManifest.Entry e : entries) {
+                    String h = e.sha256.toLowerCase(Locale.ROOT);
+                    if (missingHashes.contains(h) && queued.add(h))
+                        toSend.add(e);
+                }
+
+                long pending = 0L;
+                for (WorldManifest.Entry e : toSend)
+                    pending += e.size;
+                SaveManagerMod.LOGGER.info("[SM] manual: server needs {} of {} blob(s), {} bytes",
+                        toSend.size(), entries.size(), pending);
+
+                ACTIVE.zipping = false;
+                ACTIVE.bytes = 0L;
+                ACTIVE.total = -1L;
+                ACTIVE.lastTickNanos = System.nanoTime();
+                ACTIVE.lastBytes = 0L;
+                ACTIVE.speedBps = 0.0;
+
+                if (!toSend.isEmpty()) {
+                    networkManager.syncUpload(sessionId, toSend, (sent, total) -> {
+                        ACTIVE.bytes = Math.max(0L, sent);
+                        if (total > 0)
+                            ACTIVE.total = total;
+                        ACTIVE.updateSpeed();
+                    });
+                }
+
+                JsonObject committed = networkManager.syncCommit(sessionId).join();
+                if (committed.has("versionId")) {
+                    SyncState.recordSuccess(worldName, committed.get("versionId").getAsString());
+                    SaveManagerMod.LOGGER.info("[SM] manual: COMMITTED version {} ({} file(s), pruned {})",
+                            committed.get("versionId").getAsString(),
+                            committed.has("fileCount") ? committed.get("fileCount").getAsInt() : -1,
+                            committed.has("prunedVersions") ? committed.get("prunedVersions").getAsInt() : 0);
+                }
+
+                ACTIVE.upActive = false;
+                ACTIVE.zipping = false;
+                final int sentCount = toSend.size();
+                final int totalCount = entries.size();
+                runOnActive(sc -> {
+                    sc.localLoading = false;
+                    sc.toastManager.showSuccess(sentCount == 0
+                            ? "Already up to date"
+                            : "Synced " + sentCount + " of " + totalCount + " files");
+                    sc.fetchCloudSaves();
+                });
+            } catch (Throwable ex) {
+                String msg = extractErrorMessage(ex);
+                SaveManagerMod.LOGGER.warn("[SM] manual: delta FAILED, falling back to full zip upload - {}", msg);
+                ACTIVE.upActive = false;
+                ACTIVE.zipping = false;
+                runOnActive(sc -> sc.beginLegacyZipUpload(s));
+            } finally {
+                AutoSync.releaseManual();
+            }
+        }, "SaveManager-sync").start();
+    }
+
+    private String headVersionFor(String worldName) {
+        for (CloudSave c : cloudSaves) {
+            if (c.worldName != null && c.worldName.equals(worldName))
+                return (c.headVersionId == null || c.headVersionId.isEmpty()) ? null : c.headVersionId;
+        }
+        return null;
     }
 
     private void startUpload(Path zipFile, String worldName) {
@@ -1106,6 +1218,8 @@ public class SaveManagerScreen extends Screen {
     static class CloudSave {
         String id, worldName, createdAt, updatedAt;
         long fileSizeBytes;
+        String headVersionId;
+        boolean versioned;
 
         static CloudSave from(JsonObject o) {
             CloudSave s = new CloudSave();
@@ -1114,6 +1228,8 @@ public class SaveManagerScreen extends Screen {
             s.fileSizeBytes = getLong(o, "sizeBytes", "fileSizeBytes", "fileSize", "size", "bytes");
             s.createdAt = getString(o, "createdAt", "created", "created_on");
             s.updatedAt = getString(o, "updatedAt", "updated", "updated_on", "lastModified");
+            s.headVersionId = getString(o, "headVersionId");
+            s.versioned = "Versioned".equalsIgnoreCase(getString(o, "storageMode"));
             return s;
         }
     }

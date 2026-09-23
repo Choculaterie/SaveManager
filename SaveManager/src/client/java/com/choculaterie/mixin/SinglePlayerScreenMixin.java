@@ -1,6 +1,7 @@
 package com.choculaterie.mixin;
 
 import com.choculaterie.gui.SaveManagerScreen;
+import com.choculaterie.util.AccountState;
 import com.choculaterie.vanilib.util.WatchManager;
 import com.choculaterie.gui.CloudButton;
 import net.minecraft.client.Minecraft;
@@ -31,6 +32,10 @@ public abstract class SinglePlayerScreenMixin extends Screen {
         Path savesDir = mc.gameDirectory.toPath().resolve("saves");
 
         CompletableFuture.runAsync(() -> {
+            if (AccountState.hasAutoSync()) {
+                WatchManager.setPendingNotifications(List.of());
+                return;
+            }
             List<String> changed = WatchManager.getChangedWorlds(savesDir);
             WatchManager.setPendingNotifications(changed);
         });

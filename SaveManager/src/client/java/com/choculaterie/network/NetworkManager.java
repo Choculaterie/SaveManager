@@ -1,6 +1,9 @@
 package com.choculaterie.network;
 
 import com.choculaterie.SaveManagerMod;
+import com.choculaterie.sync.PackBuilder;
+import com.choculaterie.sync.WorldManifest;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -11,18 +14,23 @@ import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
 
 public class NetworkManager {
     private static final String BASE_URL = "https://api.choculaterie.com";
     private static final String API_BASE_PATH = "/api/SaveManagerAPI";
+    private static final String SYNC_BASE_PATH = "/api/SaveSync";
+
+    private static final String UPLOAD_BASE_URL = "https://upload.choculaterie.com";
     private static final String API_KEY_HEADER = "X-Save-Key";
 
     private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
@@ -99,6 +107,78 @@ public class NetworkManager {
                 .uri(URI.create(BASE_URL + API_BASE_PATH + "/list"))
                 .header(API_KEY_HEADER, apiKey)
                 .GET()
+                .build();
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(this::handleJsonResponse);
+    }
+
+
+    public CompletableFuture<JsonObject> syncBegin(String worldName, String parentVersionId,
+            List<WorldManifest.Entry> entries) {
+        validateApiKey();
+
+        JsonArray files = new JsonArray();
+        for (WorldManifest.Entry e : entries) {
+            JsonObject f = new JsonObject();
+            f.addProperty("path", e.path);
+            f.addProperty("sha256", e.sha256);
+            f.addProperty("size", e.size);
+            f.addProperty("crc32", e.crc32);
+            files.add(f);
+        }
+        JsonObject body = new JsonObject();
+        if (parentVersionId != null)
+            body.addProperty("parentVersionId", parentVersionId);
+        body.add("files", files);
+
+        String encodedWorld = URLEncoder.encode(worldName, StandardCharsets.UTF_8).replace("+", "%20");
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + SYNC_BASE_PATH + "/" + encodedWorld + "/begin"))
+                .header(API_KEY_HEADER, apiKey)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8))
+                .build();
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(this::handleJsonResponse);
+    }
+
+    public JsonObject syncUpload(String sessionId, List<WorldManifest.Entry> missing,
+            BiConsumer<Long, Long> progressCallback) throws IOException {
+        validateApiKey();
+
+        URL url = URI.create(UPLOAD_BASE_URL + SYNC_BASE_PATH + "/upload/" + sessionId).toURL();
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setDoOutput(true);
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty(API_KEY_HEADER, apiKey);
+        conn.setRequestProperty("Content-Type", "application/octet-stream");
+        conn.setRequestProperty("User-Agent", "SaveManager/1.0");
+        conn.setConnectTimeout(30_000);
+        conn.setReadTimeout(600_000);
+        conn.setChunkedStreamingMode(1024 * 1024);
+
+        try (OutputStream raw = conn.getOutputStream();
+                BufferedOutputStream out = new BufferedOutputStream(raw, 256 * 1024)) {
+            PackBuilder.writePack(out, missing, (done, total) -> {
+                if (progressCallback != null)
+                    progressCallback.accept(done, total);
+            });
+        }
+
+        int status = conn.getResponseCode();
+        InputStream stream = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+        String responseBody = stream == null ? "" : new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+        if (status >= 400)
+            throw new IOException("Upload failed: " + status + " - " + responseBody);
+        return JsonParser.parseString(responseBody.isEmpty() ? "{}" : responseBody).getAsJsonObject();
+    }
+
+    public CompletableFuture<JsonObject> syncCommit(String sessionId) {
+        validateApiKey();
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + SYNC_BASE_PATH + "/" + sessionId + "/commit"))
+                .header(API_KEY_HEADER, apiKey)
+                .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
                 .thenApply(this::handleJsonResponse);

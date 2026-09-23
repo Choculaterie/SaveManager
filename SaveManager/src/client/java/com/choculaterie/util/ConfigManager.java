@@ -44,12 +44,30 @@ public final class ConfigManager {
         try {
             File configFile = getConfigFile();
             configFile.getParentFile().mkdirs();
-            JsonObject json = new JsonObject();
+            JsonObject json = read();
             json.addProperty("encryptedApiToken", CryptoUtils.encrypt(key));
-            try (FileWriter writer = new FileWriter(configFile)) {
-                GSON.toJson(json, writer);
-            }
+            write(json);
         } catch (Exception ignored) {
+        }
+    }
+
+    private static JsonObject read() {
+        File configFile = getConfigFile();
+        if (!configFile.exists())
+            return new JsonObject();
+        try (FileReader reader = new FileReader(configFile)) {
+            JsonObject json = new Gson().fromJson(reader, JsonObject.class);
+            return json == null ? new JsonObject() : json;
+        } catch (Exception e) {
+            return new JsonObject();
+        }
+    }
+
+    private static void write(JsonObject json) throws Exception {
+        File configFile = getConfigFile();
+        configFile.getParentFile().mkdirs();
+        try (FileWriter writer = new FileWriter(configFile)) {
+            GSON.toJson(json, writer);
         }
     }
 

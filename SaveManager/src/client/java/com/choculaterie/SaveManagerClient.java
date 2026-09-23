@@ -2,14 +2,19 @@ package com.choculaterie;
 
 import com.choculaterie.gui.SaveManagerScreen;
 import com.choculaterie.mixin.SelectWorldScreenAccessor;
+import com.choculaterie.network.NetworkManager;
+import com.choculaterie.sync.AutoSync;
+import com.choculaterie.util.ConfigManager;
 import com.choculaterie.mixin.WorldEntryAccessor;
 import com.choculaterie.vanilib.util.WatchManager;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.client.gui.screens.worldselection.WorldSelectionList;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.level.storage.LevelResource;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
@@ -20,6 +25,19 @@ public class SaveManagerClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         SaveManagerMod.LOGGER.info("Initializing Save Manager Client");
+
+        NetworkManager syncNetwork = new NetworkManager();
+        String savedKey = ConfigManager.loadApiKey();
+        if (savedKey != null && !savedKey.isBlank())
+            syncNetwork.setApiKey(savedKey);
+        AutoSync.start(syncNetwork);
+
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+            try {
+                AutoSync.onWorldClosed(server.getWorldPath(LevelResource.ROOT));
+            } catch (Throwable ignored) {
+            }
+        });
 
         ScreenEvents.AFTER_INIT.register((client, screen, scaledWidth, scaledHeight) -> {
             if (!(screen instanceof SelectWorldScreen))

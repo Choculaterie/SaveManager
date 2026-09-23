@@ -1,6 +1,8 @@
 package com.choculaterie.gui;
 
+import com.choculaterie.SaveManagerMod;
 import com.choculaterie.network.NetworkManager;
+import com.choculaterie.util.AccountState;
 import com.choculaterie.util.ConfigManager;
 import com.choculaterie.vanilib.util.ScreenUtils;
 import com.choculaterie.vanilib.gui.widget.CustomButton;
@@ -31,6 +33,12 @@ public class AccountLinkingScreen extends Screen {
     private String linkingStatus = "";
     private String pendingAuthUrl = null;
     private ScheduledExecutorService pollExecutor = null;
+    private static final int PREMIUM_ACCENT = 0xFFE879F9;
+
+    private int premiumLinkX = -1;
+    private int premiumLinkY = -1;
+    private int premiumLinkW = 0;
+
     private CustomButton linkBtn = null;
     private CustomButton copyUrlBtn = null;
     private CustomTextField manualKeyField = null;
@@ -78,8 +86,32 @@ public class AccountLinkingScreen extends Screen {
         applyKeyBtn.visible = false;
         addRenderableWidget(applyKeyBtn);
 
-        if (hasKey)
+        if (hasKey) {
             networkManager.setApiKey(apiKey);
+            refreshAccountState();
+        }
+    }
+
+    private void openPremiumPage() {
+        try {
+            String user = AccountState.username();
+            String url = user.isBlank()
+                    ? "https://choculaterie.com/premium"
+                    : "https://choculaterie.com/users/"
+                            + java.net.URLEncoder.encode(user, java.nio.charset.StandardCharsets.UTF_8)
+                                    .replace("+", "%20")
+                            + "?tab=5&section=premium";
+            net.minecraft.util.Util.getPlatform().openUri(new java.net.URI(url));
+        } catch (Exception e) {
+            SaveManagerMod.LOGGER.warn("[SM] premium link: failed to open - {}", e.toString());
+        }
+    }
+
+    private void refreshAccountState() {
+        networkManager.getQuotaInfo().whenComplete((json, err) -> {
+            if (err == null)
+                AccountState.update(json);
+        });
     }
 
     private void handleLinkOrReset(boolean hasKey) {
@@ -362,11 +394,42 @@ public class AccountLinkingScreen extends Screen {
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
         if (hasKey && !isLinking) {
-            context.centeredText(font,
-                    Component.literal("\u00a7aAccount linked \u2713"), cx, btnY - 20, 0xFFFFFFFF);
+            String who = AccountState.username().isBlank()
+                    ? "Account linked \u2713"
+                    : "Linked as " + AccountState.username();
+            context.centeredText(font, Component.literal("\u00a7a" + who), cx, btnY - 44, 0xFFFFFFFF);
+
+            if (AccountState.isKnown()) {
+                String plan = AccountState.isPremium() ? "Premium" : "Free";
+                int planColor = AccountState.isPremium() ? 0xFFFFD257 : 0xFF999999;
+                context.centeredText(font, Component.literal(plan), cx, btnY - 32, planColor);
+
+                String storage = AccountState.usedFormatted().isEmpty()
+                        ? AccountState.quotaFormatted()
+                        : AccountState.usedFormatted() + " of " + AccountState.quotaFormatted() + " used";
+                if (!storage.isBlank())
+                    context.centeredText(font, Component.literal(storage), cx, btnY - 20, 0xFFCCCCCC);
+            }
+
+            if (AccountState.hasAutoSync()) {
+                premiumLinkX = -1;
+                context.centeredText(font,
+                        Component.literal("Auto sync is on for worlds you favourite with the star."),
+                        cx, btnY + 30, 0xFF888888);
+            } else {
+                String word = "Premium";
+                String rest = " adds auto sync and version history.";
+                int wordW = font.width(word);
+                int startX = cx - (wordW + font.width(rest)) / 2;
+                context.text(font, word, startX, btnY + 30, PREMIUM_ACCENT, false);
+                context.text(font, rest, startX + wordW, btnY + 30, 0xFF888888, false);
+                premiumLinkX = startX;
+                premiumLinkY = btnY + 30;
+                premiumLinkW = wordW;
+            }
             context.centeredText(font,
                     Component.literal("Reset to unlink and connect a different account."),
-                    cx, btnY + 30, 0xFF888888);
+                    cx, btnY + 42, 0xFF888888);
         } else if (!isLinking) {
             int stepY = btnY + 32;
             int lineH = 12;
@@ -402,6 +465,12 @@ public class AccountLinkingScreen extends Screen {
     @Override
     public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
         if (toastManager.mouseClicked(click.x(), click.y())) return true;
+        if (premiumLinkX >= 0
+                && click.x() >= premiumLinkX && click.x() <= premiumLinkX + premiumLinkW
+                && click.y() >= premiumLinkY - 2 && click.y() <= premiumLinkY + 11) {
+            openPremiumPage();
+            return true;
+        }
         return super.mouseClicked(click, doubled);
     }
 
