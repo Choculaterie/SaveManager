@@ -1,6 +1,7 @@
 package com.choculaterie.sync;
 
 import com.choculaterie.SaveManagerMod;
+import com.choculaterie.network.ApiException;
 import com.choculaterie.network.NetworkManager;
 import com.choculaterie.util.AccountState;
 import com.choculaterie.util.ConfigManager;
@@ -278,6 +279,10 @@ public final class AutoSync {
     }
 
     private static void syncOne(String folder) {
+        if (SyncState.isConflicted(folder)) {
+            SaveManagerMod.LOGGER.info("[SM] sync '{}': paused, waiting for the conflict to be resolved", folder);
+            return;
+        }
         if (!Boolean.TRUE.equals(DIRTY.get(folder))) {
             SaveManagerMod.LOGGER.info("[SM] sync '{}': nothing pending, skipping", folder);
             return;
@@ -340,13 +345,23 @@ public final class AutoSync {
                     .resolve("saves").resolve(folder));
             SaveManagerMod.LOGGER.info("[SM] sync '{}': COMMITTED version {}", folder, versionId);
         } catch (Throwable ex) {
-            String msg = ex.toString();
-            boolean terminal = msg.contains("401") || msg.contains("403") || msg.contains("413");
-            if (msg.contains("409") || msg.contains("head_moved")) {
-                SyncState.get(folder).headVersionId = null;
-                SyncState.save();
-                terminal = false;
+            Throwable cause = ex instanceof java.util.concurrent.CompletionException && ex.getCause() != null
+                    ? ex.getCause()
+                    : ex;
+
+            if (cause instanceof ApiException api && api.isConflict()) {
+                String remote = api.field("head");
+                SyncState.markConflicted(folder, remote);
+                DIRTY.remove(folder);
+                SaveManagerMod.LOGGER.warn(
+                        "[SM] sync '{}': CONFLICT, the cloud copy changed elsewhere (remote head {}). "
+                                + "Auto sync paused for this world until it is resolved.",
+                        folder, remote);
+                return;
             }
+
+            String msg = cause.toString();
+            boolean terminal = msg.contains("401") || msg.contains("403") || msg.contains("413");
             SyncState.recordFailure(folder, terminal);
             SaveManagerMod.LOGGER.warn("[SM] sync '{}': FAILED{} - {}", folder, terminal ? " (terminal, will not retry)" : ", will retry with backoff", msg);
         } finally {

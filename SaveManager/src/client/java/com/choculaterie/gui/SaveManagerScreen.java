@@ -2,6 +2,7 @@ package com.choculaterie.gui;
 
 import com.choculaterie.SaveManagerMod;
 import com.choculaterie.mixin.SelectWorldScreenAccessor;
+import com.choculaterie.network.ApiException;
 import com.choculaterie.network.NetworkManager;
 import com.choculaterie.sync.AutoSync;
 import com.choculaterie.sync.SyncState;
@@ -395,13 +396,16 @@ public class SaveManagerScreen extends Screen {
     }
 
     private void beginDeltaSync(LocalSave s) {
+        beginDeltaSync(s, s.worldName, headVersionFor(s.worldName));
+    }
+
+    private void beginDeltaSync(LocalSave s, String targetWorldName, String parentVersionId) {
         ACTIVE.reset(false, s.worldName);
         ACTIVE.zipping = true;
         localLoading = true;
 
-        final String worldName = s.worldName;
+        final String worldName = targetWorldName;
         final Path worldDir = s.dir;
-        final String parentVersionId = headVersionFor(worldName);
 
         new Thread(() -> {
             AutoSync.acquireForManual();
@@ -475,15 +479,46 @@ public class SaveManagerScreen extends Screen {
                     sc.fetchCloudSaves();
                 });
             } catch (Throwable ex) {
-                String msg = extractErrorMessage(ex);
-                SaveManagerMod.LOGGER.warn("[SM] manual: delta FAILED, falling back to full zip upload - {}", msg);
+                Throwable cause = ex instanceof java.util.concurrent.CompletionException && ex.getCause() != null
+                        ? ex.getCause()
+                        : ex;
                 ACTIVE.upActive = false;
                 ACTIVE.zipping = false;
+
+                if (cause instanceof ApiException api && api.isConflict()) {
+                    String remote = api.field("head");
+                    SyncState.markConflicted(worldName, remote);
+                    SaveManagerMod.LOGGER.warn("[SM] manual: CONFLICT on '{}', remote head {}", worldName, remote);
+                    runOnActive(sc -> {
+                        sc.localLoading = false;
+                        sc.promptConflict(s, worldName);
+                    });
+                    return;
+                }
+
+                String msg = extractErrorMessage(cause);
+                SaveManagerMod.LOGGER.warn("[SM] manual: delta FAILED, falling back to full zip upload - {}", msg);
                 runOnActive(sc -> sc.beginLegacyZipUpload(s));
             } finally {
                 AutoSync.releaseManual();
             }
         }, "SaveManager-sync").start();
+    }
+
+    private void promptConflict(LocalSave s, String worldName) {
+        confirmPopup = new ConfirmPopup(this, "World Changed Elsewhere",
+                "\"" + worldName + "\" was updated from another device since this copy last synced. "
+                        + "Uploading would discard that. Upload this copy as a separate world instead? "
+                        + "Use Download to take the cloud version instead.",
+                () -> {
+                    confirmPopup = null;
+                    String stamp = java.time.LocalDate.now().toString();
+                    String copyName = worldName + " (conflict " + stamp + ")";
+                    toastManager.showInfo("Uploading as \"" + copyName + "\"");
+                    beginDeltaSync(s, copyName, null);
+                },
+                () -> confirmPopup = null,
+                "Upload as copy");
     }
 
     private String headVersionFor(String worldName) {
@@ -630,6 +665,15 @@ public class SaveManagerScreen extends Screen {
                 deleteDirectoryRecursively(targetBase);
                 Files.createDirectories(targetBase);
                 unzipSmart(zipPath, targetBase);
+
+                String folder = targetBase.getFileName().toString();
+                if (SyncState.isConflicted(folder) || SyncState.get(folder).headVersionId != null) {
+                    AutoSync.discardStaging(folder);
+                    SyncState.clearConflict(folder,
+                            s.headVersionId == null || s.headVersionId.isEmpty() ? null : s.headVersionId);
+                }
+                WatchManager.updateLastKnown(folder, targetBase);
+
                 runOnActive(sc -> {
                     sc.toastManager.showSuccess("Download complete");
                     sc.fetchLocalSaves();

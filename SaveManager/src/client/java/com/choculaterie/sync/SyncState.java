@@ -24,6 +24,8 @@ public final class SyncState {
         public long lastSyncedAtMs;
         public long failureCount;
         public long nextAttemptAtMs;
+        public boolean conflicted;
+        public String remoteHeadVersionId;
         public Map<String, String> fileStamps = new HashMap<>();
         public Map<String, String> hashCache = new HashMap<>();
     }
@@ -84,9 +86,33 @@ public final class SyncState {
         save();
     }
 
+    public static void markConflicted(String worldFolder, String remoteHead) {
+        WorldEntry e = get(worldFolder);
+        e.conflicted = true;
+        e.remoteHeadVersionId = remoteHead;
+        e.nextAttemptAtMs = Long.MAX_VALUE;
+        save();
+    }
+
+    public static void clearConflict(String worldFolder, String acceptedHead) {
+        WorldEntry e = get(worldFolder);
+        e.conflicted = false;
+        e.remoteHeadVersionId = null;
+        e.headVersionId = acceptedHead;
+        e.failureCount = 0;
+        e.nextAttemptAtMs = 0;
+        save();
+    }
+
+    public static boolean isConflicted(String worldFolder) {
+        return get(worldFolder).conflicted;
+    }
+
     public static void recordSuccess(String worldFolder, String headVersionId) {
         WorldEntry e = get(worldFolder);
         e.headVersionId = headVersionId;
+        e.conflicted = false;
+        e.remoteHeadVersionId = null;
         e.lastSyncedAtMs = System.currentTimeMillis();
         e.failureCount = 0;
         e.nextAttemptAtMs = 0;

@@ -497,7 +497,7 @@ public class NetworkManager {
 
     private JsonObject handleJsonResponse(HttpResponse<String> response) {
         if (response.statusCode() >= 400) {
-            throw new RuntimeException("Request failed: " + response.statusCode() + " - " + response.body());
+            throw new ApiException(response.statusCode(), response.body());
         }
         Optional<String> ct = response.headers().firstValue("Content-Type");
         String body = response.body();
