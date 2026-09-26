@@ -556,7 +556,13 @@ public class SaveManagerScreen extends Screen {
         if (baseName.isEmpty())
             baseName = "world";
 
-        if (Files.exists(savesDir.resolve(baseName))) {
+        Path target = savesDir.resolve(baseName);
+        if (isWorldLocked(target)) {
+            toastManager.showError("That world is open in another instance. Close it first.");
+            return;
+        }
+
+        if (Files.exists(target)) {
             confirmPopup = new ConfirmPopup(this, "Overwrite Local Save?",
                     "A save named \"" + s.worldName + "\" already exists. Overwrite?",
                     () -> {
@@ -569,6 +575,16 @@ public class SaveManagerScreen extends Screen {
             return;
         }
         beginDownload(s, savesDir);
+    }
+
+    private static boolean isWorldLocked(Path worldDir) {
+        if (!Files.isDirectory(worldDir))
+            return false;
+        try {
+            return net.minecraft.util.DirectoryLock.isLocked(worldDir);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void beginDownload(CloudSave s, Path savesDir) {
@@ -668,6 +684,10 @@ public class SaveManagerScreen extends Screen {
     }
 
     private void deleteLocalSave(LocalSave s) {
+        if (isWorldLocked(s.dir)) {
+            toastManager.showError("That world is open in another instance. Close it first.");
+            return;
+        }
         new Thread(() -> {
             try {
                 deleteDirectoryRecursively(s.dir);
