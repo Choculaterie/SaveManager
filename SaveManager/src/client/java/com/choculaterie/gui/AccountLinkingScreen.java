@@ -425,11 +425,7 @@ public class AccountLinkingScreen extends Screen {
             if (AccountState.isKnown()) {
                 String plan = AccountState.isPremium() ? "Premium" : "Free";
                 int planColor = AccountState.isPremium() ? 0xFFFFD257 : 0xFF999999;
-                String storage = AccountState.usedFormatted().isEmpty()
-                        ? AccountState.quotaFormatted()
-                        : AccountState.usedFormatted() + " of " + AccountState.quotaFormatted();
-                String line = storage.isBlank() ? plan : plan + "  \u00b7  " + storage;
-                context.centeredText(font, Component.literal(line), cx, accountRowY + 36, planColor);
+                context.centeredText(font, Component.literal(plan), cx, accountRowY + 36, planColor);
             }
 
             context.centeredText(font, Component.literal("\u00a77Preferences"), cx, preferencesRowY, 0xFFFFFFFF);

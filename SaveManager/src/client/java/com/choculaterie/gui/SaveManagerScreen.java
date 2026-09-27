@@ -23,6 +23,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.network.chat.Component;
 
+import java.io.InputStream;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.io.IOException;
@@ -32,6 +33,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Stream;
 import java.util.concurrent.CompletableFuture;
 
 import static com.choculaterie.vanilib.util.FormatUtils.*;
@@ -53,6 +56,7 @@ public class SaveManagerScreen extends Screen {
     private final ToastManager toastManager;
     private final List<LocalSave> localSaves = new ArrayList<>();
     private final List<CloudSave> cloudSaves = new ArrayList<>();
+    private VersionPickerPopup<CloudVersion> versionPopup;
     private ScrollBar localScrollBar, cloudScrollBar;
     private int localScrollOffset = 0, cloudScrollOffset = 0;
     private int localSelectedIndex = -1, cloudSelectedIndex = -1;
@@ -71,7 +75,7 @@ public class SaveManagerScreen extends Screen {
     private String starTooltipText = null;
 
     private static final class TransferState {
-        volatile boolean dlActive, upActive, zipping, unzipping;
+        volatile boolean dlActive, upActive, zipping, unzipping, cancelled;
         volatile String worldName;
         volatile long bytes, total = -1L, lastBytes, lastTickNanos;
         volatile double speedBps;
@@ -89,11 +93,17 @@ public class SaveManagerScreen extends Screen {
                 upActive = true;
                 zipping = true;
             }
+            cancelled = false;
             bytes = 0L;
             total = -1L;
             lastBytes = 0L;
             lastTickNanos = System.nanoTime();
             speedBps = 0.0;
+        }
+
+        void abortIfCancelled() {
+            if (cancelled)
+                throw new java.util.concurrent.CancellationException("Cancelled");
         }
 
         void updateSpeed() {
@@ -122,6 +132,7 @@ public class SaveManagerScreen extends Screen {
 
     @Override
     protected void init() {
+        clearStaleTransferState();
         int btnSize = 20, margin = 6;
         addBtn(margin, margin, btnSize, btnSize, "\u2190", b -> closeScreen());
         refreshBtn = addBtn(margin + btnSize + 5, margin, btnSize, btnSize, "\uD83D\uDD04", b -> refresh());
@@ -137,9 +148,11 @@ public class SaveManagerScreen extends Screen {
         cloudPanelW = panelW;
 
         int btnW = 80, actionBtnY = this.height - 28;
-        uploadBtn = addBtn(localPanelX + (localPanelW - btnW) / 2, actionBtnY, btnW, 20, "Upload", b -> onUpload());
+        uploadBtn = addBtn(localPanelX + (localPanelW - btnW) / 2, actionBtnY, btnW, 20, "Upload",
+                b -> { if (ACTIVE.isActive()) cancelTransfer(); else onUpload(); });
+
         downloadBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2, actionBtnY, btnW, 20, "Download",
-                b -> onDownload());
+                b -> { if (ACTIVE.isActive()) cancelTransfer(); else onDownload(); });
         deleteBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2 + btnW + 10, actionBtnY, btnW, 20, "Delete",
                 b -> onDelete());
 
@@ -229,7 +242,8 @@ public class SaveManagerScreen extends Screen {
                     try (DirectoryStream<Path> ds = Files.newDirectoryStream(savesDir)) {
                         for (Path p : ds) {
                             Path name = p.getFileName();
-                            if (Files.isDirectory(p) && (name == null || !name.toString().startsWith(".")))
+                            if (Files.isDirectory(p) && (name == null || !name.toString().startsWith("."))
+                                    && Files.isRegularFile(p.resolve("level.dat")))
                                 tmp.add(LocalSave.fromDir(p));
                         }
                     }
@@ -413,6 +427,10 @@ public class SaveManagerScreen extends Screen {
             try {
                 SaveManagerMod.LOGGER.info("[SM] manual: hashing '{}' (parent={})",
                         worldName, parentVersionId == null ? "none" : parentVersionId);
+                if (!Files.isRegularFile(worldDir.resolve("level.dat")))
+                    throw new IOException("\"" + s.worldName + "\" has no level.dat, so it is not a loadable world. "
+                            + "Nothing was uploaded.");
+
                 List<WorldManifest.Entry> entries = WorldManifest.build(worldDir, (done, total) -> {
                     ACTIVE.bytes = done;
                     ACTIVE.total = total;
@@ -456,8 +474,10 @@ public class SaveManagerScreen extends Screen {
                         if (total > 0)
                             ACTIVE.total = total;
                         ACTIVE.updateSpeed();
-                    });
+                    }, () -> ACTIVE.cancelled);
                 }
+
+                ACTIVE.abortIfCancelled();
 
                 JsonObject committed = networkManager.syncCommit(sessionId).join();
                 if (committed.has("versionId")) {
@@ -491,6 +511,15 @@ public class SaveManagerScreen extends Screen {
                         : ex;
                 ACTIVE.upActive = false;
                 ACTIVE.zipping = false;
+
+                if (cause instanceof java.util.concurrent.CancellationException) {
+                    SaveManagerMod.LOGGER.info("[SM] manual: cancelled before commit, nothing was published");
+                    runOnActive(sc -> {
+                        sc.localLoading = false;
+                        sc.toastManager.showInfo("Upload cancelled");
+                    });
+                    return;
+                }
 
                 if (cause instanceof ApiException api && api.isConflict()) {
                     String remote = api.field("head");
@@ -595,11 +624,47 @@ public class SaveManagerScreen extends Screen {
         } catch (Exception ignored) {
         }
 
+        if (!s.versioned || !AccountState.isPremium()) {
+            confirmDownload(s, savesDir, null);
+            return;
+        }
+
+        cloudLoading = true;
+        networkManager.syncVersions(s.worldName).whenComplete((arr, err) -> {
+            List<CloudVersion> versions = new ArrayList<>();
+            if (err == null && arr != null) {
+                for (com.google.gson.JsonElement e : arr) {
+                    if (e != null && e.isJsonObject())
+                        versions.add(CloudVersion.from(e.getAsJsonObject()));
+                }
+            }
+            runOnActive(sc -> {
+                sc.cloudLoading = false;
+                if (versions.size() > 1)
+                    sc.openVersionPopup(s, versions, savesDir);
+                else
+                    sc.confirmDownload(s, savesDir, null);
+            });
+        });
+    }
+
+    private void openVersionPopup(CloudSave s, List<CloudVersion> versions, Path savesDir) {
+        versionPopup = new VersionPickerPopup<>("Which version of \"" + s.worldName + "\"?",
+                versions, CloudVersion::label,
+                v -> {
+                    versionPopup = null;
+                    if (v != null)
+                        confirmDownload(s, savesDir, v.isHead ? null : v.versionId);
+                },
+                () -> versionPopup = null);
+    }
+
+    private void confirmDownload(CloudSave s, Path savesDir, String versionId) {
         String baseName = sanitizeFolderName(s.worldName);
         if (baseName.isEmpty())
             baseName = "world";
-
         Path target = savesDir.resolve(baseName);
+
         if (isWorldLocked(target)) {
             toastManager.showError("That world is open in another instance. Close it first.");
             return;
@@ -610,14 +675,12 @@ public class SaveManagerScreen extends Screen {
                     "A save named \"" + s.worldName + "\" already exists. Overwrite?",
                     () -> {
                         confirmPopup = null;
-                        beginDownload(s, savesDir);
+                        beginDownload(s, savesDir, versionId);
                     },
-                    () -> {
-                        confirmPopup = null;
-                    }, "Overwrite");
+                    () -> confirmPopup = null, "Overwrite");
             return;
         }
-        beginDownload(s, savesDir);
+        beginDownload(s, savesDir, versionId);
     }
 
     private static boolean isWorldLocked(Path worldDir) {
@@ -631,6 +694,10 @@ public class SaveManagerScreen extends Screen {
     }
 
     private void beginDownload(CloudSave s, Path savesDir) {
+        beginDownload(s, savesDir, null);
+    }
+
+    private void beginDownload(CloudSave s, Path savesDir, String versionId) {
         cloudLoading = true;
         Path tmpDir;
         try {
@@ -647,14 +714,35 @@ public class SaveManagerScreen extends Screen {
         if (s.fileSizeBytes > 0)
             ACTIVE.total = s.fileSizeBytes;
 
-        networkManager.downloadWorldSave(s.id, tmpDir, (downloaded, total) -> {
-            ACTIVE.bytes = Math.max(0L, downloaded);
-            if (total > 0)
-                ACTIVE.total = total;
-            ACTIVE.updateSpeed();
-        }).whenComplete((zipPath, err) -> {
+        var download = versionId == null
+                ? networkManager.downloadWorldSave(s.id, tmpDir, (downloaded, total) -> {
+                    ACTIVE.bytes = Math.max(0L, downloaded);
+                    if (total > 0)
+                        ACTIVE.total = total;
+                    ACTIVE.updateSpeed();
+                }, () -> ACTIVE.cancelled)
+                : networkManager.downloadVersion(versionId, tmpDir, (downloaded, total) -> {
+                    ACTIVE.bytes = Math.max(0L, downloaded);
+                    if (total > 0)
+                        ACTIVE.total = total;
+                    ACTIVE.updateSpeed();
+                }, () -> ACTIVE.cancelled);
+
+        download.whenComplete((zipPath, err) -> {
             ACTIVE.dlActive = false;
             if (err != null) {
+                Throwable dlCause = err instanceof java.util.concurrent.CompletionException && err.getCause() != null
+                        ? err.getCause()
+                        : err;
+                if (dlCause instanceof java.util.concurrent.CancellationException) {
+                    SaveManagerMod.LOGGER.info("[SM] download cancelled, the local world was not touched");
+                    try { Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
+                    runOnActive(sc -> {
+                        sc.cloudLoading = false;
+                        sc.toastManager.showInfo("Download cancelled");
+                    });
+                    return;
+                }
                 String msg = extractErrorMessage(err);
                 SaveManagerMod.LOGGER.warn("Download failed - {}", msg);
                 runOnActive(sc -> {
@@ -668,11 +756,46 @@ public class SaveManagerScreen extends Screen {
             if (baseName.isEmpty())
                 baseName = "world";
             Path targetBase = savesDir.resolve(baseName);
+            Path stagedDir = null;
+            Path displaced = null;
             try {
-                Files.createDirectories(targetBase);
-                deleteDirectoryRecursively(targetBase);
-                Files.createDirectories(targetBase);
-                unzipSmart(zipPath, targetBase);
+                Path work = savesDir.resolve(".savemanager-temp");
+                Files.createDirectories(work);
+                stagedDir = work.resolve(baseName + "-new-" + UUID.randomUUID());
+                Files.createDirectories(stagedDir);
+                unzipSmart(zipPath, stagedDir);
+
+                ACTIVE.abortIfCancelled();
+
+                Path worldRoot = locateWorldRoot(stagedDir);
+                if (worldRoot == null) {
+                    SaveManagerMod.LOGGER.warn("[SM] download: no level.dat under {} - extracted {}",
+                            stagedDir, describeTree(stagedDir));
+                    throw new IOException("That copy has no level.dat. Your save was left untouched.");
+                }
+                if (!worldRoot.equals(stagedDir)) {
+                    SaveManagerMod.LOGGER.info("[SM] download: archive was nested, using {}",
+                            stagedDir.relativize(worldRoot));
+                    Path lifted = stagedDir.getParent().resolve(stagedDir.getFileName() + "-root");
+                    Files.move(worldRoot, lifted, StandardCopyOption.ATOMIC_MOVE);
+                    deleteDirectoryRecursively(stagedDir);
+                    stagedDir = lifted;
+                }
+
+                if (Files.exists(targetBase)) {
+                    displaced = work.resolve(baseName + "-old-" + UUID.randomUUID());
+                    Files.move(targetBase, displaced, StandardCopyOption.ATOMIC_MOVE);
+                }
+                try {
+                    Files.move(stagedDir, targetBase, StandardCopyOption.ATOMIC_MOVE);
+                    stagedDir = null;
+                } catch (IOException swapFailed) {
+                    if (displaced != null && !Files.exists(targetBase)) {
+                        Files.move(displaced, targetBase, StandardCopyOption.ATOMIC_MOVE);
+                        displaced = null;
+                    }
+                    throw swapFailed;
+                }
 
                 String folder = targetBase.getFileName().toString();
                 if (SyncState.isConflicted(folder) || SyncState.get(folder).headVersionId != null) {
@@ -683,14 +806,25 @@ public class SaveManagerScreen extends Screen {
                 WatchManager.updateLastKnown(folder, targetBase);
 
                 runOnActive(sc -> {
-                    sc.toastManager.showSuccess("Download complete");
+                    sc.toastManager.showSuccess(versionId == null
+                            ? "Download complete"
+                            : "Restored \"" + s.worldName + "\" from history");
                     sc.fetchLocalSaves();
                 });
+            } catch (java.util.concurrent.CancellationException cancel) {
+                SaveManagerMod.LOGGER.info("[SM] download cancelled before the swap, the local world is unchanged");
+                runOnActive(sc -> sc.toastManager.showInfo("Download cancelled"));
             } catch (Exception ex) {
                 String msg = extractErrorMessage(ex);
                 SaveManagerMod.LOGGER.warn("Unzip failed - {}", msg);
                 runOnActive(sc -> sc.toastManager.showError(msg));
             } finally {
+                if (stagedDir != null) {
+                    try { deleteDirectoryRecursively(stagedDir); } catch (Exception ignored) {}
+                }
+                if (displaced != null) {
+                    try { deleteDirectoryRecursively(displaced); } catch (Exception ignored) {}
+                }
                 try { Files.deleteIfExists(zipPath); } catch (Exception ignored) {}
                 try { Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
                 try { if (Files.exists(tmpDir)) deleteDirectoryRecursively(tmpDir); } catch (Exception ignored) {}
@@ -802,6 +936,8 @@ public class SaveManagerScreen extends Screen {
         deleteBtn.extractRenderState(ctx, mouseX, mouseY, delta);
 
         toastManager.render(ctx, delta, mouseX, mouseY);
+        if (versionPopup != null)
+            versionPopup.extractRenderState(ctx, mouseX, mouseY, delta);
         if (confirmPopup != null)
             confirmPopup.extractRenderState(ctx, mouseX, mouseY, delta);
     }
@@ -819,7 +955,8 @@ public class SaveManagerScreen extends Screen {
         if (maxScroll > 0)
             scrollBar.setScrollPercentage((double) scrollOffset / maxScroll);
 
-        boolean blockHover = toastManager.isMouseOverToast(mouseX, mouseY) || confirmPopup != null;
+        boolean blockHover = toastManager.isMouseOverToast(mouseX, mouseY) || confirmPopup != null
+                || versionPopup != null;
 
         if (scrollBar.updateAndRender(ctx, mouseX, mouseY, delta, minecraft.getWindow().handle())) {
             int newOffset = (int) Math.round(scrollBar.getScrollPercentage() * maxScroll);
@@ -917,14 +1054,50 @@ public class SaveManagerScreen extends Screen {
         return info;
     }
 
+    private static long lastStaleCheckMs;
+
+    private static void clearStaleTransferState() {
+        if (!ACTIVE.isActive())
+            return;
+        long now = System.currentTimeMillis();
+        if (now - lastStaleCheckMs < 1000L)
+            return;
+        lastStaleCheckMs = now;
+        for (Thread t : Thread.getAllStackTraces().keySet()) {
+            if (t.isAlive() && t.getName().startsWith("SaveManager-"))
+                return;
+        }
+        SaveManagerMod.LOGGER.warn("[SM] clearing stale transfer state, no transfer thread is alive");
+        ACTIVE.dlActive = false;
+        ACTIVE.upActive = false;
+        ACTIVE.zipping = false;
+        ACTIVE.unzipping = false;
+        ACTIVE.cancelled = false;
+        AutoSync.releaseManualIfHeld();
+    }
+
+    private void cancelTransfer() {
+        if (!ACTIVE.isActive() || ACTIVE.cancelled)
+            return;
+        ACTIVE.cancelled = true;
+        toastManager.showInfo("Cancelling\u2026");
+    }
+
     private void updateButtonStates() {
+        clearStaleTransferState();
         boolean opActive = ACTIVE.isActive();
+        boolean uploading = ACTIVE.upActive || ACTIVE.zipping;
+        boolean downloading = ACTIVE.dlActive || ACTIVE.unzipping;
         boolean hasLocal = localSelectedIndex >= 0 && localSelectedIndex < localSaves.size();
         boolean hasCloud = cloudSelectedIndex >= 0 && cloudSelectedIndex < cloudSaves.size();
-        if (uploadBtn != null)
-            uploadBtn.active = hasLocal && !opActive;
-        if (downloadBtn != null)
-            downloadBtn.active = hasCloud && !opActive;
+        if (uploadBtn != null) {
+            uploadBtn.active = uploading ? !ACTIVE.cancelled : (hasLocal && !opActive);
+            uploadBtn.setMessage(Component.literal(uploading ? "Cancel" : "Upload"));
+        }
+        if (downloadBtn != null) {
+            downloadBtn.active = downloading ? !ACTIVE.cancelled : (hasCloud && !opActive);
+            downloadBtn.setMessage(Component.literal(downloading ? "Cancel" : "Download"));
+        }
         if (deleteBtn != null)
             deleteBtn.active = (hasLocal || hasCloud) && !opActive;
         if (refreshBtn != null)
@@ -940,6 +1113,8 @@ public class SaveManagerScreen extends Screen {
         double mx = click.x(), my = click.y();
         if (confirmPopup != null)
             return confirmPopup.mouseClicked(click.x(), click.y(), click.button());
+        if (versionPopup != null)
+            return versionPopup.mouseClicked(click.x(), click.y(), click.button());
         if (toastManager.mouseClicked(click.x(), click.y()))
             return true;
         if (toastManager.isMouseOverToast(mx, my))
@@ -1011,6 +1186,9 @@ public class SaveManagerScreen extends Screen {
             confirmPopup = null;
             localLoading = false;
             cloudLoading = false;
+        } else if (versionPopup != null) {
+            versionPopup = null;
+            cloudLoading = false;
         } else {
             closeScreen();
         }
@@ -1081,11 +1259,35 @@ public class SaveManagerScreen extends Screen {
 
     // ── File I/O helpers ──
 
+    private static Path locateWorldRoot(Path extracted) throws IOException {
+        if (Files.isRegularFile(extracted.resolve("level.dat")))
+            return extracted;
+        try (Stream<Path> kids = Files.list(extracted)) {
+            for (Path kid : kids.toList()) {
+                if (Files.isDirectory(kid) && Files.isRegularFile(kid.resolve("level.dat")))
+                    return kid;
+            }
+        }
+        return null;
+    }
+
+    private static String describeTree(Path dir) {
+        try (Stream<Path> kids = Files.list(dir)) {
+            List<String> names = kids.map(p -> p.getFileName().toString()
+                    + (Files.isDirectory(p) ? "/" : "")).sorted().limit(12).toList();
+            return names.isEmpty() ? "nothing" : String.join(", ", names);
+        } catch (IOException e) {
+            return "unreadable (" + e + ")";
+        }
+    }
+
     private static void unzipSmart(Path zipFile, Path targetBase) throws Exception {
         String root = detectSingleRootDir(zipFile);
-        try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(Files.newInputStream(zipFile))) {
-            for (java.util.zip.ZipEntry e; (e = zis.getNextEntry()) != null;) {
-                if (e.isDirectory())
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zipFile.toFile())) {
+            var en = zf.entries();
+            while (en.hasMoreElements()) {
+                java.util.zip.ZipEntry e = en.nextElement();
+                if (e == null || e.isDirectory())
                     continue;
                 String name = e.getName().replace('\\', '/');
                 if (root != null && name.startsWith(root + "/"))
@@ -1096,8 +1298,9 @@ public class SaveManagerScreen extends Screen {
                 if (!out.startsWith(targetBase))
                     throw new IllegalArgumentException("Blocked zip entry: " + name);
                 Files.createDirectories(out.getParent());
-                Files.copy(zis, out, StandardCopyOption.REPLACE_EXISTING);
-                zis.closeEntry();
+                try (InputStream in = zf.getInputStream(e)) {
+                    Files.copy(in, out, StandardCopyOption.REPLACE_EXISTING);
+                }
             }
         }
     }
@@ -1284,6 +1487,29 @@ public class SaveManagerScreen extends Screen {
                 }
             });
             return sum[0];
+        }
+    }
+
+    static class CloudVersion {
+        String versionId, createdAt;
+        int fileCount;
+        long totalBytes;
+        boolean isHead;
+
+        static CloudVersion from(JsonObject o) {
+            CloudVersion v = new CloudVersion();
+            v.versionId = getString(o, "versionId", "id");
+            v.createdAt = getString(o, "createdAt", "created");
+            v.fileCount = (int) getLong(o, "fileCount");
+            v.totalBytes = getLong(o, "totalBytes", "sizeBytes", "size");
+            v.isHead = o.has("isHead") && o.get("isHead").getAsBoolean();
+            return v;
+        }
+
+        String label() {
+            String when = shortDate(createdAt);
+            return (isHead ? "Current \u2022 " : "") + when
+                    + " \u2022 " + fileCount + " files \u2022 " + formatBytes(totalBytes);
         }
     }
 

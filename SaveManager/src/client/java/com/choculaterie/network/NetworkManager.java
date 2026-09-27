@@ -24,6 +24,7 @@ import java.util.UUID;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 
 public class NetworkManager {
     private static final String BASE_URL = "https://api.choculaterie.com";
@@ -101,6 +102,22 @@ public class NetworkManager {
                 .thenApply(this::handleJsonResponse);
     }
 
+    public CompletableFuture<JsonArray> syncVersions(String worldName) {
+        validateApiKey();
+        String encodedWorld = URLEncoder.encode(worldName, StandardCharsets.UTF_8).replace("+", "%20");
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(BASE_URL + SYNC_BASE_PATH + "/" + encodedWorld + "/versions"))
+                .header(API_KEY_HEADER, apiKey)
+                .GET()
+                .build();
+        return httpClient.sendAsync(req, HttpResponse.BodyHandlers.ofString())
+                .thenApply(response -> {
+                    if (response.statusCode() >= 400)
+                        throw new ApiException(response.statusCode(), response.body());
+                    return JsonParser.parseString(response.body()).getAsJsonArray();
+                });
+    }
+
     public CompletableFuture<JsonObject> listWorldSaves() {
         validateApiKey();
         HttpRequest req = HttpRequest.newBuilder()
@@ -145,6 +162,11 @@ public class NetworkManager {
 
     public JsonObject syncUpload(String sessionId, List<WorldManifest.Entry> missing,
             BiConsumer<Long, Long> progressCallback) throws IOException {
+        return syncUpload(sessionId, missing, progressCallback, () -> false);
+    }
+
+    public JsonObject syncUpload(String sessionId, List<WorldManifest.Entry> missing,
+            BiConsumer<Long, Long> progressCallback, BooleanSupplier cancelled) throws IOException {
         validateApiKey();
 
         URL url = URI.create(UPLOAD_BASE_URL + SYNC_BASE_PATH + "/upload/" + sessionId).toURL();
@@ -161,6 +183,8 @@ public class NetworkManager {
         try (OutputStream raw = conn.getOutputStream();
                 BufferedOutputStream out = new BufferedOutputStream(raw, 256 * 1024)) {
             PackBuilder.writePack(out, missing, (done, total) -> {
+                if (cancelled.getAsBoolean())
+                    throw new java.util.concurrent.CancellationException("Cancelled");
                 if (progressCallback != null)
                     progressCallback.accept(done, total);
             });
@@ -367,10 +391,27 @@ public class NetworkManager {
     }
 
     public CompletableFuture<Path> downloadWorldSave(String saveId, Path destinationDirectory,
+            BiConsumer<Long, Long> progressCallback, BooleanSupplier cancelled) {
+        return downloadFrom(BASE_URL + API_BASE_PATH + "/download/" + saveId,
+                destinationDirectory, progressCallback, cancelled);
+    }
+
+    public CompletableFuture<Path> downloadVersion(String versionId, Path destinationDirectory,
+            BiConsumer<Long, Long> progressCallback, BooleanSupplier cancelled) {
+        return downloadFrom(BASE_URL + SYNC_BASE_PATH + "/download/" + versionId,
+                destinationDirectory, progressCallback, cancelled);
+    }
+
+    private CompletableFuture<Path> downloadFrom(String url, Path destinationDirectory,
             BiConsumer<Long, Long> progressCallback) {
+        return downloadFrom(url, destinationDirectory, progressCallback, () -> false);
+    }
+
+    private CompletableFuture<Path> downloadFrom(String url, Path destinationDirectory,
+            BiConsumer<Long, Long> progressCallback, BooleanSupplier cancelled) {
         validateApiKey();
         HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(BASE_URL + API_BASE_PATH + "/download/" + saveId))
+                .uri(URI.create(url))
                 .header(API_KEY_HEADER, apiKey)
                 .header("Accept-Encoding", "identity")
                 .GET()
@@ -408,6 +449,8 @@ public class NetworkManager {
                             byte[] buffer = new byte[256 * 1024];
                             int read;
                             while ((read = in.read(buffer)) != -1) {
+                                if (cancelled.getAsBoolean())
+                                    throw new java.util.concurrent.CancellationException("Cancelled");
                                 out.write(buffer, 0, read);
                                 downloaded += read;
                                 if (progressCallback != null) {

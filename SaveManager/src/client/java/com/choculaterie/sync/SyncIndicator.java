@@ -1,5 +1,6 @@
 package com.choculaterie.sync;
 
+import com.choculaterie.SaveManagerMod;
 import com.choculaterie.util.ConfigManager;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
@@ -22,12 +23,18 @@ public final class SyncIndicator {
 
     private static float indicatorValue;
     private static float lastIndicatorValue;
+    private static boolean loggedRegistration;
 
     private SyncIndicator() {
     }
 
     public static void register() {
         ClientTickEvents.END_CLIENT_TICK.register(client -> tick());
+        if (!loggedRegistration) {
+            loggedRegistration = true;
+            SaveManagerMod.LOGGER.info("[SM] sync indicator registered (enabled={})",
+                    ConfigManager.isSyncIndicatorEnabled());
+        }
 
         HudElementRegistry.addLast(ID, (context, tickCounter) -> {
             if (!ConfigManager.isSyncIndicatorEnabled())

@@ -92,6 +92,11 @@ public final class AutoSync {
         TRANSFER.release();
     }
 
+    public static void releaseManualIfHeld() {
+        if (TRANSFER.availablePermits() == 0)
+            TRANSFER.release();
+    }
+
     public static String syncingWorld() {
         return syncingWorld;
     }
@@ -337,6 +342,13 @@ public final class AutoSync {
         }
         try {
             SyncState.WorldEntry entry = SyncState.get(folder);
+            if (!Files.isRegularFile(staging.resolve("level.dat"))) {
+                SaveManagerMod.LOGGER.warn(
+                        "[SM] sync '{}': staging has no level.dat, refusing to publish a broken world", folder);
+                DIRTY.remove(folder);
+                return;
+            }
+
             List<WorldManifest.Entry> entries = WorldManifest.buildCached(staging, entry.hashCache);
             if (entries.isEmpty()) {
                 DIRTY.remove(folder);
