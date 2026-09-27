@@ -31,8 +31,11 @@ public final class SyncState {
     }
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final String CLIENT_ID_KEY = "clientId";
+    private static final String WORLDS_KEY = "worlds";
     private static final Map<String, WorldEntry> WORLDS = new ConcurrentHashMap<>();
     private static volatile boolean loaded = false;
+    private static volatile String clientId;
 
     private SyncState() {
     }
@@ -50,11 +53,24 @@ public final class SyncState {
         if (!Files.exists(p))
             return;
         try (Reader r = Files.newBufferedReader(p)) {
-            var type = new TypeToken<Map<String, WorldEntry>>() {
-            }.getType();
-            Map<String, WorldEntry> read = GSON.fromJson(r, type);
-            if (read != null)
-                WORLDS.putAll(read);
+            JsonObject root = GSON.fromJson(r, JsonObject.class);
+            if (root == null)
+                return;
+            if (root.has(CLIENT_ID_KEY) && !root.get(CLIENT_ID_KEY).isJsonNull())
+                clientId = root.get(CLIENT_ID_KEY).getAsString();
+            if (root.has(WORLDS_KEY) && root.get(WORLDS_KEY).isJsonObject()) {
+                var type = new TypeToken<Map<String, WorldEntry>>() {
+                }.getType();
+                Map<String, WorldEntry> read = GSON.fromJson(root.getAsJsonObject(WORLDS_KEY), type);
+                if (read != null)
+                    WORLDS.putAll(read);
+            } else {
+                var type = new TypeToken<Map<String, WorldEntry>>() {
+                }.getType();
+                Map<String, WorldEntry> legacy = GSON.fromJson(root, type);
+                if (legacy != null)
+                    WORLDS.putAll(legacy);
+            }
         } catch (Exception ignored) {
         }
     }
@@ -64,8 +80,12 @@ public final class SyncState {
         try {
             Files.createDirectories(p.getParent());
             Path tmp = p.resolveSibling(p.getFileName() + ".tmp");
+            JsonObject root = new JsonObject();
+            if (clientId != null)
+                root.addProperty(CLIENT_ID_KEY, clientId);
+            root.add(WORLDS_KEY, GSON.toJsonTree(WORLDS));
             try (Writer w = Files.newBufferedWriter(tmp)) {
-                GSON.toJson(WORLDS, w);
+                GSON.toJson(root, w);
             }
             try {
                 Files.move(tmp, p, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
@@ -74,6 +94,15 @@ public final class SyncState {
             }
         } catch (Exception ignored) {
         }
+    }
+
+    public static synchronized String clientId() {
+        load();
+        if (clientId == null || clientId.isBlank()) {
+            clientId = java.util.UUID.randomUUID().toString();
+            save();
+        }
+        return clientId;
     }
 
     public static WorldEntry get(String worldFolder) {

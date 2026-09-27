@@ -8,6 +8,8 @@ import com.choculaterie.util.ConfigManager;
 import com.choculaterie.vanilib.util.WatchManager;
 import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.toasts.SystemToast;
+import net.minecraft.network.chat.Component;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -40,6 +42,7 @@ public final class AutoSync {
     private static final Map<String, Boolean> QUEUED = new ConcurrentHashMap<>();
     private static ScheduledExecutorService scheduler;
     private static volatile NetworkManager network;
+    private static volatile String syncingWorld = null;
 
     private AutoSync() {
     }
@@ -89,6 +92,18 @@ public final class AutoSync {
         TRANSFER.release();
     }
 
+    public static String syncingWorld() {
+        return syncingWorld;
+    }
+
+    public static void markTransferStarted(String folder) {
+        syncingWorld = folder;
+    }
+
+    public static void markTransferFinished() {
+        syncingWorld = null;
+    }
+
     public static boolean isEnabled() {
         return AccountState.hasAutoSync() && ConfigManager.loadApiKey() != null;
     }
@@ -108,6 +123,13 @@ public final class AutoSync {
         SyncState.WorldEntry entry = SyncState.get(folder);
         if (!entry.stagingPopulated) {
             logSkip(folder, "autosave", "staging not populated yet, waiting for world exit");
+            return;
+        }
+
+        if (syncingWorld != null) {
+            logSkip(folder, "autosave", "a sync is still uploading, staging stays frozen until it finishes");
+            DIRTY.put(folder, Boolean.TRUE);
+            scheduleSync(folder);
             return;
         }
 
@@ -161,6 +183,18 @@ public final class AutoSync {
         }, "SaveManager-autosync-exit");
         t.setDaemon(true);
         t.start();
+    }
+
+    private static void notifyConflict(String folder) {
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            try {
+                SystemToast.addOrUpdate(mc.gui.toastManager(), SystemToast.SystemToastId.WORLD_ACCESS_FAILURE,
+                        Component.literal("Sync paused: " + folder),
+                        Component.literal("Changed on another device. Open Save Manager to resolve."));
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     private static void scheduleSync(String folder) {
@@ -309,6 +343,7 @@ public final class AutoSync {
                 return;
             }
 
+            syncingWorld = folder;
             SaveManagerMod.LOGGER.info("[SM] sync '{}': manifest {} file(s), parent={}",
                     folder, entries.size(), entry.headVersionId == null ? "none" : entry.headVersionId);
             JsonObject begun = net.syncBegin(folder, entry.headVersionId, entries).join();
@@ -335,6 +370,14 @@ public final class AutoSync {
             if (!toSend.isEmpty())
                 net.syncUpload(sessionId, toSend, null);
 
+            if (begun.has("fastForwarded") && begun.get("fastForwarded").getAsBoolean()) {
+                String head = begun.has("head") && !begun.get("head").isJsonNull()
+                        ? begun.get("head").getAsString()
+                        : null;
+                SaveManagerMod.LOGGER.info(
+                        "[SM] sync '{}': server fast-forwarded us onto our own head {}", folder, head);
+            }
+
             JsonObject done = net.syncCommit(sessionId).join();
             String versionId = done.get("versionId").getAsString();
 
@@ -353,6 +396,7 @@ public final class AutoSync {
                 String remote = api.field("head");
                 SyncState.markConflicted(folder, remote);
                 DIRTY.remove(folder);
+                notifyConflict(folder);
                 SaveManagerMod.LOGGER.warn(
                         "[SM] sync '{}': CONFLICT, the cloud copy changed elsewhere (remote head {}). "
                                 + "Auto sync paused for this world until it is resolved.",
@@ -365,8 +409,13 @@ public final class AutoSync {
             SyncState.recordFailure(folder, terminal);
             SaveManagerMod.LOGGER.warn("[SM] sync '{}': FAILED{} - {}", folder, terminal ? " (terminal, will not retry)" : ", will retry with backoff", msg);
         } finally {
+            syncingWorld = null;
             TRANSFER.release();
         }
+    }
+
+    public static void markClean(String folder) {
+        DIRTY.remove(folder);
     }
 
     public static void discardStaging(String folder) {

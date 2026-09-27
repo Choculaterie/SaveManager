@@ -4,6 +4,7 @@ import com.choculaterie.gui.SaveManagerScreen;
 import com.choculaterie.mixin.SelectWorldScreenAccessor;
 import com.choculaterie.network.NetworkManager;
 import com.choculaterie.sync.AutoSync;
+import com.choculaterie.sync.SyncIndicator;
 import com.choculaterie.util.ConfigManager;
 import com.choculaterie.mixin.WorldEntryAccessor;
 import com.choculaterie.vanilib.util.WatchManager;
@@ -31,6 +32,7 @@ public class SaveManagerClient implements ClientModInitializer {
         if (savedKey != null && !savedKey.isBlank())
             syncNetwork.setApiKey(savedKey);
         AutoSync.start(syncNetwork);
+        SyncIndicator.register();
 
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
             try {

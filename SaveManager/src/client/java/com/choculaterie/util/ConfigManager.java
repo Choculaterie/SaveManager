@@ -11,6 +11,7 @@ import java.io.FileWriter;
 
 public final class ConfigManager {
     private static final String CONFIG_FILE = "save-manager-settings.json";
+    private static final String SYNC_INDICATOR_KEY = "showSyncIndicator";
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private ConfigManager() {
@@ -46,6 +47,24 @@ public final class ConfigManager {
             configFile.getParentFile().mkdirs();
             JsonObject json = read();
             json.addProperty("encryptedApiToken", CryptoUtils.encrypt(key));
+            write(json);
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static boolean isSyncIndicatorEnabled() {
+        try {
+            JsonObject json = read();
+            return !json.has(SYNC_INDICATOR_KEY) || json.get(SYNC_INDICATOR_KEY).getAsBoolean();
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    public static void setSyncIndicatorEnabled(boolean enabled) {
+        try {
+            JsonObject json = read();
+            json.addProperty(SYNC_INDICATOR_KEY, enabled);
             write(json);
         } catch (Exception ignored) {
         }

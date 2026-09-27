@@ -409,6 +409,7 @@ public class SaveManagerScreen extends Screen {
 
         new Thread(() -> {
             AutoSync.acquireForManual();
+            AutoSync.markTransferStarted(s.worldName);
             try {
                 SaveManagerMod.LOGGER.info("[SM] manual: hashing '{}' (parent={})",
                         worldName, parentVersionId == null ? "none" : parentVersionId);
@@ -467,6 +468,11 @@ public class SaveManagerScreen extends Screen {
                             committed.has("prunedVersions") ? committed.get("prunedVersions").getAsInt() : 0);
                 }
 
+                String localFolder = s.worldName;
+                AutoSync.markClean(localFolder);
+                WatchManager.clearPendingNotification(localFolder);
+                WatchManager.updateLastKnown(localFolder, worldDir);
+
                 ACTIVE.upActive = false;
                 ACTIVE.zipping = false;
                 final int sentCount = toSend.size();
@@ -476,6 +482,7 @@ public class SaveManagerScreen extends Screen {
                     sc.toastManager.showSuccess(sentCount == 0
                             ? "Already up to date"
                             : "Synced " + sentCount + " of " + totalCount + " files");
+                    sc.fetchLocalSaves();
                     sc.fetchCloudSaves();
                 });
             } catch (Throwable ex) {
@@ -500,6 +507,7 @@ public class SaveManagerScreen extends Screen {
                 SaveManagerMod.LOGGER.warn("[SM] manual: delta FAILED, falling back to full zip upload - {}", msg);
                 runOnActive(sc -> sc.beginLegacyZipUpload(s));
             } finally {
+                AutoSync.markTransferFinished();
                 AutoSync.releaseManual();
             }
         }, "SaveManager-sync").start();

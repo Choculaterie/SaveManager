@@ -129,6 +129,7 @@ public class NetworkManager {
         JsonObject body = new JsonObject();
         if (parentVersionId != null)
             body.addProperty("parentVersionId", parentVersionId);
+        body.addProperty("clientId", com.choculaterie.sync.SyncState.clientId());
         body.add("files", files);
 
         String encodedWorld = URLEncoder.encode(worldName, StandardCharsets.UTF_8).replace("+", "%20");

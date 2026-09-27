@@ -39,7 +39,8 @@ public class AccountLinkingScreen extends Screen {
     private int premiumLinkY = -1;
     private int premiumLinkW = 0;
 
-    private CustomButton linkBtn = null;
+    private CustomButton linkBtn = null, indicatorBtn;
+    private int accountRowY, preferencesRowY;
     private CustomButton copyUrlBtn = null;
     private CustomTextField manualKeyField = null;
     private CustomButton applyKeyBtn = null;
@@ -60,36 +61,58 @@ public class AccountLinkingScreen extends Screen {
         String apiKey = ConfigManager.loadApiKey();
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
-        int cx = this.width / 2, btnW = 100;
-        int btnY = this.height / 2 - 10;
-        linkBtn = new CustomButton(cx - btnW / 2, btnY, btnW, 20,
-                Component.literal(hasKey ? "Reset" : "Link Account"),
+        int cx = this.width / 2, btnW = 120;
+        accountRowY = 48;
+        preferencesRowY = accountRowY + 108;
+
+        linkBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, 20,
+                Component.literal(hasKey ? "Unlink Account" : "Link Account"),
                 b -> handleLinkOrReset(hasKey));
         addRenderableWidget(linkBtn);
 
-        copyUrlBtn = new CustomButton(cx - btnW / 2, btnY, btnW, 20,
+        copyUrlBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, 20,
                 Component.literal("Copy URL"), b -> copyAuthUrl());
         copyUrlBtn.visible = false;
         addRenderableWidget(copyUrlBtn);
 
         int fieldW = Math.min(240, this.width - 80), applyW = 50;
         int fieldX = cx - (fieldW + applyW + 4) / 2;
-        manualKeyField = new CustomTextField(minecraft, fieldX, btnY + 60, fieldW, 16, Component.empty());
+        manualKeyField = new CustomTextField(minecraft, fieldX, accountRowY + 80, fieldW, 16, Component.empty());
         manualKeyField.setPlaceholder(Component.literal("Paste save key here..."));
         manualKeyField.setMaxLength(128);
         manualKeyField.setOnEnterPressed(this::applyManualKey);
         manualKeyField.visible = false;
         addRenderableWidget(manualKeyField);
 
-        applyKeyBtn = new CustomButton(fieldX + fieldW + 4, btnY + 60, applyW, 16,
+        applyKeyBtn = new CustomButton(fieldX + fieldW + 4, accountRowY + 80, applyW, 16,
                 Component.literal("Apply"), b -> applyManualKey());
         applyKeyBtn.visible = false;
         addRenderableWidget(applyKeyBtn);
+
+        indicatorBtn = new CustomButton(cx - btnW / 2, preferencesRowY + 22, btnW, 20,
+                Component.literal(indicatorLabel()), b -> toggleSyncIndicator());
+        indicatorBtn.visible = hasKey;
+        addRenderableWidget(indicatorBtn);
 
         if (hasKey) {
             networkManager.setApiKey(apiKey);
             refreshAccountState();
         }
+    }
+
+    private void drawDivider(GuiGraphicsExtractor context, int cx, int y) {
+        int half = Math.min(150, this.width / 2 - 20);
+        context.fill(cx - half, y, cx + half, y + 1, 0x33FFFFFF);
+    }
+
+    private static String indicatorLabel() {
+        return ConfigManager.isSyncIndicatorEnabled() ? "Sync message: On" : "Sync message: Off";
+    }
+
+    private void toggleSyncIndicator() {
+        ConfigManager.setSyncIndicatorEnabled(!ConfigManager.isSyncIndicatorEnabled());
+        if (indicatorBtn != null)
+            indicatorBtn.setMessage(Component.literal(indicatorLabel()));
     }
 
     private void openPremiumPage() {
@@ -386,7 +409,6 @@ public class AccountLinkingScreen extends Screen {
     public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
         super.extractRenderState(context, mouseX, mouseY, delta);
         int cx = this.width / 2;
-        int btnY = this.height / 2 - 10;
 
         context.centeredText(font, title, cx, 10, 0xFFFFFFFF);
 
@@ -394,69 +416,78 @@ public class AccountLinkingScreen extends Screen {
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
         if (hasKey && !isLinking) {
-            String who = AccountState.username().isBlank()
-                    ? "Account linked \u2713"
-                    : "Linked as " + AccountState.username();
-            context.centeredText(font, Component.literal("\u00a7a" + who), cx, btnY - 44, 0xFFFFFFFF);
+            context.centeredText(font, Component.literal("\u00a77Account"), cx, accountRowY, 0xFFFFFFFF);
+            drawDivider(context, cx, accountRowY + 10);
+
+            String who = AccountState.username().isBlank() ? "Linked" : AccountState.username();
+            context.centeredText(font, Component.literal("\u00a7a" + who), cx, accountRowY + 22, 0xFFFFFFFF);
 
             if (AccountState.isKnown()) {
                 String plan = AccountState.isPremium() ? "Premium" : "Free";
                 int planColor = AccountState.isPremium() ? 0xFFFFD257 : 0xFF999999;
-                context.centeredText(font, Component.literal(plan), cx, btnY - 32, planColor);
-
                 String storage = AccountState.usedFormatted().isEmpty()
                         ? AccountState.quotaFormatted()
-                        : AccountState.usedFormatted() + " of " + AccountState.quotaFormatted() + " used";
-                if (!storage.isBlank())
-                    context.centeredText(font, Component.literal(storage), cx, btnY - 20, 0xFFCCCCCC);
+                        : AccountState.usedFormatted() + " of " + AccountState.quotaFormatted();
+                String line = storage.isBlank() ? plan : plan + "  \u00b7  " + storage;
+                context.centeredText(font, Component.literal(line), cx, accountRowY + 36, planColor);
             }
+
+            context.centeredText(font, Component.literal("\u00a77Preferences"), cx, preferencesRowY, 0xFFFFFFFF);
+            drawDivider(context, cx, preferencesRowY + 10);
 
             if (AccountState.hasAutoSync()) {
                 premiumLinkX = -1;
                 context.centeredText(font,
-                        Component.literal("Auto sync is on for worlds you favourite with the star."),
-                        cx, btnY + 30, 0xFF888888);
+                        Component.literal("Favourited worlds sync automatically."),
+                        cx, preferencesRowY + 52, 0xFF888888);
             } else {
                 String word = "Premium";
                 String rest = " adds auto sync and version history.";
                 int wordW = font.width(word);
                 int startX = cx - (wordW + font.width(rest)) / 2;
-                context.text(font, word, startX, btnY + 30, PREMIUM_ACCENT, false);
-                context.text(font, rest, startX + wordW, btnY + 30, 0xFF888888, false);
+                context.text(font, word, startX, preferencesRowY + 52, PREMIUM_ACCENT, false);
+                context.text(font, rest, startX + wordW, preferencesRowY + 52, 0xFF888888, false);
                 premiumLinkX = startX;
-                premiumLinkY = btnY + 30;
+                premiumLinkY = preferencesRowY + 52;
                 premiumLinkW = wordW;
             }
-            context.centeredText(font,
-                    Component.literal("Reset to unlink and connect a different account."),
-                    cx, btnY + 42, 0xFF888888);
-        } else if (!isLinking) {
-            int stepY = btnY + 32;
-            int lineH = 12;
-            context.centeredText(font, Component.literal("How it works:"), cx, stepY, 0xFF999999);
-            stepY += lineH + 4;
-            context.centeredText(font, Component.literal("1. A browser window will open. Sign in and click Approve."),
-                    cx, stepY, 0xFFCCCCCC);
-            stepY += lineH;
-            context.centeredText(font,
-                    Component.literal("2. The game will briefly join a server to verify your Minecraft account."), cx,
-                    stepY, 0xFFCCCCCC);
-            stepY += lineH;
-            context.centeredText(font, Component.literal("3. Once verified, you're ready to sync your saves!"), cx,
-                    stepY, 0xFFCCCCCC);
-        } else {
+
+            context.centeredText(font, Component.literal("\u00a78Unlinking keeps your cloud saves."),
+                    cx, this.height - 24, 0xFFFFFFFF);
+        } else if (isLinking) {
             if (!linkingStatus.isEmpty()) {
-                context.centeredText(font,
-                        Component.literal(linkingStatus), cx, btnY - 20, 0xFF88FF88);
+                context.centeredText(font, Component.literal(linkingStatus),
+                        cx, accountRowY + 34, 0xFF88FF88);
             }
             if (pendingAuthUrl != null) {
                 context.centeredText(font,
                         Component.literal("Browser didn't open? Copy the URL and paste it manually."),
-                        cx, btnY + 30, 0xFF888888);
+                        cx, accountRowY + 108, 0xFF888888);
                 context.centeredText(font,
                         Component.literal("Or paste your save key manually if the mod didn't receive it:"),
-                        cx, btnY + 44, 0xFF888888);
+                        cx, accountRowY + 122, 0xFF888888);
             }
+        } else {
+            context.centeredText(font, Component.literal("\u00a77Getting started"), cx, accountRowY, 0xFFFFFFFF);
+            drawDivider(context, cx, accountRowY + 10);
+
+            context.centeredText(font,
+                    Component.literal("Link this client to your Choculaterie account to sync your worlds."),
+                    cx, accountRowY + 22, 0xFFCCCCCC);
+
+            int stepY = accountRowY + 88;
+            int lineH = 14;
+            context.centeredText(font,
+                    Component.literal("1. A browser window will open. Sign in and click Approve."),
+                    cx, stepY, 0xFFCCCCCC);
+            stepY += lineH;
+            context.centeredText(font,
+                    Component.literal("2. The game briefly joins a server to verify your Minecraft account."),
+                    cx, stepY, 0xFFCCCCCC);
+            stepY += lineH;
+            context.centeredText(font,
+                    Component.literal("3. Once verified, you're ready to sync your saves."),
+                    cx, stepY, 0xFFCCCCCC);
         }
 
         toastManager.render(context, delta, mouseX, mouseY);
