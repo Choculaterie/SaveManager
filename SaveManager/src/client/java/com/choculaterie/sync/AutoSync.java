@@ -190,6 +190,18 @@ public final class AutoSync {
         t.start();
     }
 
+    private static void notifyStopped(String folder, String reason) {
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> {
+            try {
+                SystemToast.addOrUpdate(mc.gui.toastManager(), SystemToast.SystemToastId.WORLD_ACCESS_FAILURE,
+                        Component.literal("Sync stopped: " + folder),
+                        Component.literal(reason));
+            } catch (Throwable ignored) {
+            }
+        });
+    }
+
     private static void notifyConflict(String folder) {
         Minecraft mc = Minecraft.getInstance();
         mc.execute(() -> {
@@ -420,6 +432,10 @@ public final class AutoSync {
             boolean terminal = msg.contains("401") || msg.contains("403") || msg.contains("413");
             SyncState.recordFailure(folder, terminal);
             SaveManagerMod.LOGGER.warn("[SM] sync '{}': FAILED{} - {}", folder, terminal ? " (terminal, will not retry)" : ", will retry with backoff", msg);
+            if (terminal)
+                notifyStopped(folder, msg.contains("413")
+                        ? "Not enough cloud storage"
+                        : "Cloud sync was refused");
         } finally {
             syncingWorld = null;
             TRANSFER.release();

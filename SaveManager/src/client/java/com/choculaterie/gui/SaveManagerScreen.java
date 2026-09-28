@@ -533,6 +533,16 @@ public class SaveManagerScreen extends Screen {
                 }
 
                 String msg = extractErrorMessage(cause);
+                boolean versioned = isVersionedWorld(s.worldName);
+                if (versioned) {
+                    SaveManagerMod.LOGGER.warn("[SM] manual: delta FAILED on a synced world - {}", msg);
+                    runOnActive(sc -> {
+                        sc.localLoading = false;
+                        sc.toastManager.showError(msg);
+                    });
+                    return;
+                }
+
                 SaveManagerMod.LOGGER.warn("[SM] manual: delta FAILED, falling back to full zip upload - {}", msg);
                 runOnActive(sc -> sc.beginLegacyZipUpload(s));
             } finally {
@@ -558,12 +568,19 @@ public class SaveManagerScreen extends Screen {
                 "Upload as copy");
     }
 
-    private String headVersionFor(String worldName) {
+    private boolean isVersionedWorld(String worldName) {
+        if (SyncState.get(worldName).headVersionId != null)
+            return true;
         for (CloudSave c : cloudSaves) {
             if (c.worldName != null && c.worldName.equals(worldName))
-                return (c.headVersionId == null || c.headVersionId.isEmpty()) ? null : c.headVersionId;
+                return c.versioned;
         }
-        return null;
+        return false;
+    }
+
+    private String headVersionFor(String worldName) {
+        String known = SyncState.get(worldName).headVersionId;
+        return known == null || known.isEmpty() ? null : known;
     }
 
     private void startUpload(Path zipFile, String worldName) {

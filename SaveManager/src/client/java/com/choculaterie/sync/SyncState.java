@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.reflect.TypeToken;
+import com.choculaterie.SaveManagerMod;
 import net.minecraft.client.Minecraft;
 
 import java.io.IOException;
@@ -32,10 +33,12 @@ public final class SyncState {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String CLIENT_ID_KEY = "clientId";
+    private static final String CLIENT_HOME_KEY = "clientHome";
     private static final String WORLDS_KEY = "worlds";
     private static final Map<String, WorldEntry> WORLDS = new ConcurrentHashMap<>();
     private static volatile boolean loaded = false;
     private static volatile String clientId;
+    private static volatile String clientHome;
 
     private SyncState() {
     }
@@ -58,6 +61,8 @@ public final class SyncState {
                 return;
             if (root.has(CLIENT_ID_KEY) && !root.get(CLIENT_ID_KEY).isJsonNull())
                 clientId = root.get(CLIENT_ID_KEY).getAsString();
+            if (root.has(CLIENT_HOME_KEY) && !root.get(CLIENT_HOME_KEY).isJsonNull())
+                clientHome = root.get(CLIENT_HOME_KEY).getAsString();
             if (root.has(WORLDS_KEY) && root.get(WORLDS_KEY).isJsonObject()) {
                 var type = new TypeToken<Map<String, WorldEntry>>() {
                 }.getType();
@@ -83,6 +88,8 @@ public final class SyncState {
             JsonObject root = new JsonObject();
             if (clientId != null)
                 root.addProperty(CLIENT_ID_KEY, clientId);
+            if (clientHome != null)
+                root.addProperty(CLIENT_HOME_KEY, clientHome);
             root.add(WORLDS_KEY, GSON.toJsonTree(WORLDS));
             try (Writer w = Files.newBufferedWriter(tmp)) {
                 GSON.toJson(root, w);
@@ -98,11 +105,42 @@ public final class SyncState {
 
     public static synchronized String clientId() {
         load();
+        String home = currentHome();
+
         if (clientId == null || clientId.isBlank()) {
             clientId = java.util.UUID.randomUUID().toString();
+            clientHome = home;
+            save();
+            return clientId;
+        }
+
+        if (clientHome == null) {
+            clientHome = home;
+            save();
+            return clientId;
+        }
+
+        if (!clientHome.equals(home) && Files.isDirectory(Path.of(clientHome))) {
+            SaveManagerMod.LOGGER.warn(
+                    "[SM] this instance was copied from {}, which still exists - taking a new client id "
+                            + "so the original keeps its own sync history", clientHome);
+            clientId = java.util.UUID.randomUUID().toString();
+            clientHome = home;
+            save();
+        } else if (!clientHome.equals(home)) {
+            clientHome = home;
             save();
         }
+
         return clientId;
+    }
+
+    private static String currentHome() {
+        try {
+            return Minecraft.getInstance().gameDirectory.toPath().toAbsolutePath().normalize().toString();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     public static WorldEntry get(String worldFolder) {
