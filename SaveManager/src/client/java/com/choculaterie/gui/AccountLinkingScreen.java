@@ -124,7 +124,7 @@ public class AccountLinkingScreen extends Screen {
                             + java.net.URLEncoder.encode(user, java.nio.charset.StandardCharsets.UTF_8)
                                     .replace("+", "%20")
                             + "?tab=5&section=premium";
-            net.minecraft.util.Util.getPlatform().openUri(new java.net.URI(url));
+            com.mojang.blaze3d.Blaze3D.openUri(new java.net.URI(url));
         } catch (Exception e) {
             SaveManagerMod.LOGGER.warn("[SM] premium link: failed to open - {}", e.toString());
         }
@@ -228,7 +228,7 @@ public class AccountLinkingScreen extends Screen {
                         applyKeyBtn.visible = true;
                     linkingStatus = "Waiting for approval...";
                     try {
-                        net.minecraft.util.Util.getPlatform().openUri(new java.net.URI(authUrl));
+                        com.mojang.blaze3d.Blaze3D.openUri(new java.net.URI(authUrl));
                     } catch (Exception ignored) {
                     }
                 });

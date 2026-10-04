@@ -16,9 +16,9 @@ import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.client.gui.screens.worldselection.WorldSelectionList;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.storage.LevelResource;
-import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
+import com.choculaterie.vanilib.util.MouseState;
 
 public class SaveManagerClient implements ClientModInitializer {
     private static boolean wasDown = false;
@@ -59,8 +59,7 @@ public class SaveManagerClient implements ClientModInitializer {
                 var tr = client.font;
                 var children = levelList.children();
 
-                boolean isDown = GLFW.glfwGetMouseButton(
-                        client.getWindow().handle(), GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+                boolean isDown = MouseState.isLeftDown();
                 boolean clicked = wasDown && !isDown;
                 wasDown = isDown;
 

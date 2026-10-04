@@ -36,6 +36,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 import java.util.concurrent.CompletableFuture;
+import com.mojang.blaze3d.platform.InputConstants;
 
 import static com.choculaterie.vanilib.util.FormatUtils.*;
 
@@ -1139,7 +1140,7 @@ public class SaveManagerScreen extends Screen {
         if (super.mouseClicked(click, false))
             return true;
 
-        if (click.button() == 0 && !localLoading && !cloudLoading && !ACTIVE.dlActive && !ACTIVE.upActive) {
+        if (click.button() == InputConstants.MOUSE_BUTTON_LEFT && !localLoading && !cloudLoading && !ACTIVE.dlActive && !ACTIVE.upActive) {
             int idx = clickedRowIndex(mx, my, localPanelX, localPanelW, localScrollOffset, localSaves.size());
             if (idx >= 0) {
                 int starX = localPanelX + localPanelW - 14;
@@ -1231,7 +1232,7 @@ public class SaveManagerScreen extends Screen {
         try {
             Path savesDir = minecraft.gameDirectory.toPath().resolve("saves");
             Files.createDirectories(savesDir);
-            net.minecraft.util.Util.getPlatform().openUri(java.util.Objects.requireNonNull(savesDir.toUri()));
+            com.mojang.blaze3d.Blaze3D.openUri(java.util.Objects.requireNonNull(savesDir.toUri()));
         } catch (Exception e) {
             SaveManagerMod.LOGGER.warn("Failed to open saves folder - {}", extractErrorMessage(e));
             toastManager.showError("Failed to open saves folder");

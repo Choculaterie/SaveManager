@@ -343,6 +343,10 @@ public final class AutoSync {
         NetworkManager net = network;
         if (net == null)
             return;
+        String apiKey = ConfigManager.loadApiKey();
+        if (apiKey == null || apiKey.isBlank())
+            return;
+        net.setApiKey(apiKey);
 
         Path staging = stagingRoot().resolve(folder);
         if (!Files.isDirectory(staging))
