@@ -25,7 +25,7 @@ public abstract class SinglePlayerScreenMixin extends Screen {
 
     @Inject(method = "init", at = @At("TAIL"), remap = false)
     private void savemanager$init(CallbackInfo ci) {
-        addRenderableWidget(new CloudButton(6, 6, 20, 20,
+        addRenderableWidget(new CloudButton(6, 6, 21, 21,
                 b -> this.minecraft.gui.setScreen(new SaveManagerScreen((Screen) (Object) this))));
 
         Minecraft mc = Minecraft.getInstance();

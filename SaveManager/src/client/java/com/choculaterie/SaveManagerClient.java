@@ -7,6 +7,7 @@ import com.choculaterie.sync.AutoSync;
 import com.choculaterie.sync.SyncIndicator;
 import com.choculaterie.util.ConfigManager;
 import com.choculaterie.mixin.WorldEntryAccessor;
+import com.choculaterie.vanilib.gui.theme.UIIcon;
 import com.choculaterie.vanilib.util.WatchManager;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
@@ -81,7 +82,7 @@ public class SaveManagerClient implements ClientModInitializer {
                     int alpha = (int) (pulse * 255);
                     int color = (alpha << 24) | 0x00FFFFFF;
 
-                    context.text(tr, "\uD83D\uDCBE", iconX, iconY, color, true);
+                    UIIcon.UPLOAD.drawCentered(context, iconX + 4, iconY + 4, color);
 
                     boolean inBounds = mouseX >= iconX - 1 && mouseX < iconX + 10
                             && mouseY >= iconY && mouseY < iconY + 10;

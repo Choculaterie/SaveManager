@@ -437,7 +437,10 @@ public class SaveManagerScreen extends Screen {
     }
 
     private void beginDeltaSync(LocalSave s) {
-        beginDeltaSync(s, s.worldName, headVersionFor(s.worldName));
+        boolean inCloud = cloudSaves.stream().anyMatch(c -> s.worldName.equals(c.worldName));
+        if (!inCloud && !cloudLoading)
+            SyncState.forget(s.worldName);
+        beginDeltaSync(s, s.worldName, inCloud || cloudLoading ? headVersionFor(s.worldName) : null);
     }
 
     private void beginDeltaSync(LocalSave s, String targetWorldName, String parentVersionId) {
@@ -523,12 +526,16 @@ public class SaveManagerScreen extends Screen {
                 ACTIVE.upActive = false;
                 ACTIVE.zipping = false;
                 final int sentCount = toSend.size();
-                final int totalCount = entries.size();
                 runOnActive(sc -> {
                     sc.localLoading = false;
-                    sc.toastManager.showSuccess(sentCount == 0
-                            ? "Already up to date"
-                            : "Synced " + sentCount + " of " + totalCount + " files");
+                    String done;
+                    if (parentVersionId == null)
+                        done = "Uploaded \"" + worldName + "\"";
+                    else if (sentCount > 0)
+                        done = "Synced " + sentCount + (sentCount == 1 ? " changed file" : " changed files");
+                    else
+                        done = "Already up to date";
+                    sc.toastManager.showSuccess(done);
                     sc.fetchLocalSaves();
                     sc.fetchCloudSaves();
                 });
@@ -922,6 +929,8 @@ public class SaveManagerScreen extends Screen {
                             cloudLoading = false;
                             return;
                         }
+                        if (s.worldName != null)
+                            SyncState.forget(s.worldName);
                         toastManager.showSuccess("Deleted");
                         cloudLoading = false;
                         cloudSelectedIndex = -1;
