@@ -74,6 +74,7 @@ public class SaveManagerScreen extends Screen {
     private int localPanelX, localPanelW, cloudPanelX, cloudPanelW, listY, listH;
     private int visibleRows = 1;
     private ConfirmPopup confirmPopup = null;
+    private boolean wasDeleteDown;
     private CustomButton uploadBtn, downloadBtn, deleteBtn, refreshBtn;
     private String quotaFormatted = "Loading";
     private long quotaBytes = 5L * 1024L * 1024L * 1024L;
@@ -990,6 +991,11 @@ public class SaveManagerScreen extends Screen {
             int mouseY, float delta) {
         super.extractRenderState(ctx, mouseX, mouseY, delta);
         updateButtonStates();
+        boolean deleteDown = InputConstants.isKeyDown(InputConstants.KEY_DELETE);
+        if (deleteDown && !wasDeleteDown && confirmPopup == null && versionPopup == null
+                && deleteBtn != null && deleteBtn.active)
+            onDelete();
+        wasDeleteDown = deleteDown;
         int cx = this.width / 2;
         int titleY = UIDraw.flatContentY(UITheme.Dimensions.PADDING_SMALL + 1, UITheme.Dimensions.BUTTON_HEIGHT);
         UIDraw.centeredText(ctx, title, cx, titleY, UITheme.Colors.TEXT_HIGHLIGHT);
