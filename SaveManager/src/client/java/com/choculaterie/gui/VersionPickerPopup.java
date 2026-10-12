@@ -1,5 +1,6 @@
 package com.choculaterie.gui;
 
+import com.choculaterie.vanilib.gui.theme.UIDraw;
 import com.choculaterie.vanilib.gui.theme.UITheme;
 import com.choculaterie.vanilib.gui.widget.CustomButton;
 import net.minecraft.client.Minecraft;
@@ -61,23 +62,14 @@ public class VersionPickerPopup<T> implements Renderable {
 
         cancelButton = new CustomButton(btnX, y + popupHeight - pad - rowH, btnW, rowH,
                 Component.literal("Cancel"), b -> onCancel.run());
+        cancelButton.setIcon(com.choculaterie.vanilib.gui.theme.UIIcon.CLOSE);
     }
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
-        Minecraft client = Minecraft.getInstance();
-        context.fill(0, 0, client.getWindow().getGuiScaledWidth(), client.getWindow().getGuiScaledHeight(),
-                UITheme.Colors.OVERLAY_BG);
-
-        context.fill(x, y, x + POPUP_WIDTH, y + popupHeight, UITheme.Colors.BUTTON_BG_DISABLED);
-        int bw = UITheme.Dimensions.BORDER_WIDTH;
-        context.fill(x, y, x + POPUP_WIDTH, y + bw, UITheme.Colors.BUTTON_BORDER);
-        context.fill(x, y + popupHeight - bw, x + POPUP_WIDTH, y + popupHeight, UITheme.Colors.BUTTON_BORDER);
-        context.fill(x, y, x + bw, y + popupHeight, UITheme.Colors.BUTTON_BORDER);
-        context.fill(x + POPUP_WIDTH - bw, y, x + POPUP_WIDTH, y + popupHeight, UITheme.Colors.BUTTON_BORDER);
-
-        context.centeredText(client.font, Component.literal(title),
-                x + POPUP_WIDTH / 2, y + UITheme.Dimensions.PADDING, UITheme.Colors.TEXT_PRIMARY);
+        UIDraw.overlay(context);
+        UIDraw.modalFrame(context, x, y, POPUP_WIDTH, popupHeight);
+        UIDraw.modalTitle(context, title, x, y + UITheme.Dimensions.PADDING, POPUP_WIDTH);
 
         for (CustomButton b : buttons)
             b.extractRenderState(context, mouseX, mouseY, delta);
@@ -91,12 +83,15 @@ public class VersionPickerPopup<T> implements Renderable {
         }
         for (int i = 0; i < buttons.size(); i++) {
             if (isOver(buttons.get(i), mouseX, mouseY)) {
+                UIDraw.playClick();
                 onSelected.accept(items.get(i));
                 return true;
             }
         }
-        if (isOver(cancelButton, mouseX, mouseY))
+        if (isOver(cancelButton, mouseX, mouseY)) {
+            UIDraw.playClick();
             onCancel.run();
+        }
         return true;
     }
 

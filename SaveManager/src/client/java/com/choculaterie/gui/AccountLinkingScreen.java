@@ -5,6 +5,11 @@ import com.choculaterie.network.NetworkManager;
 import com.choculaterie.util.AccountState;
 import com.choculaterie.util.ConfigManager;
 import com.choculaterie.vanilib.util.ScreenUtils;
+import com.choculaterie.vanilib.gui.theme.ButtonStyle;
+import com.choculaterie.vanilib.gui.theme.UIDraw;
+import com.choculaterie.vanilib.gui.theme.UIIcon;
+import com.choculaterie.vanilib.gui.theme.UITheme;
+import com.choculaterie.vanilib.gui.widget.ConfirmPopup;
 import com.choculaterie.vanilib.gui.widget.CustomButton;
 import com.choculaterie.vanilib.gui.widget.CustomTextField;
 import com.choculaterie.vanilib.gui.widget.ToastManager;
@@ -39,9 +44,10 @@ public class AccountLinkingScreen extends Screen {
     private int premiumLinkY = -1;
     private int premiumLinkW = 0;
 
-    private CustomButton linkBtn = null, indicatorBtn;
+    private CustomButton linkBtn = null, indicatorBtn, backgroundBtn;
     private int accountRowY, preferencesRowY;
     private CustomButton copyUrlBtn = null;
+    private ConfirmPopup confirmPopup = null;
     private CustomTextField manualKeyField = null;
     private CustomButton applyKeyBtn = null;
 
@@ -54,45 +60,56 @@ public class AccountLinkingScreen extends Screen {
     @Override
     protected void init() {
 
-        int btnSize = 20, margin = 6;
+        int btnSize = UITheme.Dimensions.BUTTON_HEIGHT, margin = UITheme.Dimensions.PADDING_SMALL + 1;
         addRenderableWidget(
-                new CustomButton(margin, margin, btnSize, btnSize, Component.literal("\u2190"), b -> goBack()));
+                new CustomButton(margin, margin, btnSize, btnSize, Component.literal(""), b -> goBack()).setIcon(UIIcon.ARROW_LEFT));
 
         String apiKey = ConfigManager.loadApiKey();
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
         int cx = this.width / 2, btnW = 120;
-        accountRowY = 48;
+        int contentH = hasKey ? 174 : 132;
+        accountRowY = Math.max(36, (this.height - contentH) / 2);
         preferencesRowY = accountRowY + 108;
 
-        linkBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, 20,
+        int rowH = UITheme.Dimensions.BUTTON_HEIGHT;
+        linkBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, rowH,
                 Component.literal(hasKey ? "Unlink Account" : "Link Account"),
                 b -> handleLinkOrReset(hasKey));
+        linkBtn.setStyle(hasKey ? ButtonStyle.DANGER : ButtonStyle.PRIMARY).setIcon(hasKey ? UIIcon.CLOSE : UIIcon.GLOBE);
         addRenderableWidget(linkBtn);
 
-        copyUrlBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, 20,
+        copyUrlBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, rowH,
                 Component.literal("Copy URL"), b -> copyAuthUrl());
+        copyUrlBtn.setIcon(UIIcon.CLIPBOARD);
         copyUrlBtn.visible = false;
         addRenderableWidget(copyUrlBtn);
 
-        int fieldW = Math.min(240, this.width - 80), applyW = 50;
+        int fieldW = Math.min(240, this.width - 80), applyW = 58;
         int fieldX = cx - (fieldW + applyW + 4) / 2;
-        manualKeyField = new CustomTextField(minecraft, fieldX, accountRowY + 80, fieldW, 16, Component.empty());
+        manualKeyField = new CustomTextField(minecraft, fieldX, accountRowY + 80, fieldW, rowH, Component.empty());
         manualKeyField.setPlaceholder(Component.literal("Paste save key here..."));
         manualKeyField.setMaxLength(128);
         manualKeyField.setOnEnterPressed(this::applyManualKey);
         manualKeyField.visible = false;
         addRenderableWidget(manualKeyField);
 
-        applyKeyBtn = new CustomButton(fieldX + fieldW + 4, accountRowY + 80, applyW, 16,
+        applyKeyBtn = new CustomButton(fieldX + fieldW + 4, accountRowY + 80, applyW, rowH,
                 Component.literal("Apply"), b -> applyManualKey());
+        applyKeyBtn.setIcon(UIIcon.CHECK).setStyle(ButtonStyle.PRIMARY);
         applyKeyBtn.visible = false;
         addRenderableWidget(applyKeyBtn);
 
-        indicatorBtn = new CustomButton(cx - btnW / 2, preferencesRowY + 22, btnW, 20,
+        int prefW = Math.max(font.width("Sync message: Off"), font.width("Background: Transparent")) + 16;
+        indicatorBtn = new CustomButton(cx - prefW - 2, preferencesRowY + 22, prefW, rowH,
                 Component.literal(indicatorLabel()), b -> toggleSyncIndicator());
         indicatorBtn.visible = hasKey;
         addRenderableWidget(indicatorBtn);
+
+        backgroundBtn = new CustomButton(cx + 2, preferencesRowY + 22, prefW, rowH,
+                Component.literal(backgroundLabel()), b -> toggleBackground());
+        backgroundBtn.visible = hasKey;
+        addRenderableWidget(backgroundBtn);
 
         if (hasKey) {
             networkManager.setApiKey(apiKey);
@@ -102,7 +119,16 @@ public class AccountLinkingScreen extends Screen {
 
     private void drawDivider(GuiGraphicsExtractor context, int cx, int y) {
         int half = Math.min(150, this.width / 2 - 20);
-        context.fill(cx - half, y, cx + half, y + 1, 0x33FFFFFF);
+        UIDraw.hDivider(context, cx - half, cx + half, y, UITheme.Colors.DIVIDER_LIGHT);
+    }
+
+    private static String backgroundLabel() {
+        return ConfigManager.isSolidBackground() ? "Background: Solid" : "Background: Transparent";
+    }
+
+    private void toggleBackground() {
+        ConfigManager.setSolidBackground(!ConfigManager.isSolidBackground());
+        backgroundBtn.setMessage(Component.literal(backgroundLabel()));
     }
 
     private static String indicatorLabel() {
@@ -139,9 +165,15 @@ public class AccountLinkingScreen extends Screen {
 
     private void handleLinkOrReset(boolean hasKey) {
         if (hasKey) {
-            networkManager.setApiKey(null);
-            ConfigManager.clearApiKey();
-            minecraft.gui.setScreen(new AccountLinkingScreen(parent));
+            confirmPopup = new ConfirmPopup(this, "Unlink Account?",
+                    "Unlinking keeps your cloud saves. Link again any time to get them back.",
+                    () -> {
+                        confirmPopup = null;
+                        networkManager.setApiKey(null);
+                        ConfigManager.clearApiKey();
+                        SaveManagerScreen.resetAccountCaches();
+                        minecraft.gui.setScreen(new AccountLinkingScreen(parent));
+                    }, () -> confirmPopup = null, "Unlink").setConfirmStyle(ButtonStyle.DANGER);
         } else {
             startOAuthFlow();
         }
@@ -165,7 +197,8 @@ public class AccountLinkingScreen extends Screen {
 
     private void navigateToWorldSelect(Screen target) {
         if (target instanceof SelectWorldScreen) {
-            minecraft.gui.setScreen(target);
+            Screen grandParent = ((com.choculaterie.mixin.SelectWorldScreenAccessor) target).getParentScreen();
+            minecraft.gui.setScreen(new SelectWorldScreen(java.util.Objects.requireNonNull(grandParent)));
         } else {
             minecraft.gui.setScreen(new SelectWorldScreen(ScreenUtils.resolveRootParent(target)));
         }
@@ -174,7 +207,7 @@ public class AccountLinkingScreen extends Screen {
     private void copyAuthUrl() {
         if (pendingAuthUrl != null && minecraft.keyboardHandler != null) {
             minecraft.keyboardHandler.setClipboard(pendingAuthUrl);
-            toastManager.showSuccess("URL copied! Paste it in your browser.");
+            copyUrlBtn.showSuccess("Copied");
         }
     }
 
@@ -187,7 +220,22 @@ public class AccountLinkingScreen extends Screen {
             return;
         }
         stopPolling();
-        completeLinking(key);
+        applyKeyBtn.active = false;
+        networkManager.setApiKey(key);
+        networkManager.getQuotaInfo().whenComplete((json, err) -> runOnClient(() -> {
+            if (err != null || json == null) {
+                applyKeyBtn.active = true;
+                networkManager.setApiKey(ConfigManager.loadApiKey());
+                applyKeyBtn.showError("Invalid");
+                return;
+            }
+            applyKeyBtn.showSuccess("Applied");
+            CompletableFuture.delayedExecutor(700, TimeUnit.MILLISECONDS)
+                    .execute(() -> runOnClient(() -> {
+                        completeLinking(key);
+                        AccountState.update(json);
+                    }));
+        }));
     }
 
     private void startOAuthFlow() {
@@ -386,6 +434,7 @@ public class AccountLinkingScreen extends Screen {
 
         networkManager.setApiKey(saveKey);
         ConfigManager.saveApiKey(saveKey);
+        SaveManagerScreen.resetAccountCaches();
 
         var mc = net.minecraft.client.Minecraft.getInstance();
         mc.execute(() -> {
@@ -406,95 +455,107 @@ public class AccountLinkingScreen extends Screen {
     }
 
     @Override
+    public void extractBackground(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
+        if (ConfigManager.isSolidBackground()) {
+            context.fill(0, 0, this.width, this.height, UITheme.Colors.BACKGROUND);
+        } else {
+            super.extractBackground(context, mouseX, mouseY, delta);
+        }
+    }
+
+    @Override
     public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
-        super.extractRenderState(context, mouseX, mouseY, delta);
+        super.extractRenderState(context, confirmPopup != null ? -1 : mouseX, confirmPopup != null ? -1 : mouseY, delta);
         int cx = this.width / 2;
 
-        context.centeredText(font, title, cx, 10, 0xFFFFFFFF);
+        UIDraw.centeredText(context, title, cx, UIDraw.flatContentY(UITheme.Dimensions.PADDING_SMALL + 1, UITheme.Dimensions.BUTTON_HEIGHT), UITheme.Colors.TEXT_HIGHLIGHT);
 
         String apiKey = ConfigManager.loadApiKey();
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
         if (hasKey && !isLinking) {
-            context.centeredText(font, Component.literal("\u00a77Account"), cx, accountRowY, 0xFFFFFFFF);
+            UIDraw.centeredText(context, Component.literal("Account"), cx, accountRowY, UITheme.Colors.ACCENT);
             drawDivider(context, cx, accountRowY + 10);
 
             String who = AccountState.username().isBlank() ? "Linked" : AccountState.username();
-            context.centeredText(font, Component.literal("\u00a7a" + who), cx, accountRowY + 22, 0xFFFFFFFF);
+            UIDraw.centeredText(context, Component.literal(who), cx, accountRowY + 22, UITheme.Colors.SUCCESS_TEXT);
 
             if (AccountState.isKnown()) {
                 String plan = AccountState.isPremium() ? "Premium" : "Free";
-                int planColor = AccountState.isPremium() ? 0xFFFFD257 : 0xFF999999;
-                context.centeredText(font, Component.literal(plan), cx, accountRowY + 36, planColor);
+                int planColor = AccountState.isPremium() ? UITheme.Palette.GOLD : UITheme.Colors.TEXT_MUTED;
+                UIDraw.centeredText(context, Component.literal(plan), cx, accountRowY + 36, planColor);
             }
 
-            context.centeredText(font, Component.literal("\u00a77Preferences"), cx, preferencesRowY, 0xFFFFFFFF);
+            UIDraw.centeredText(context, Component.literal("Preferences"), cx, preferencesRowY, UITheme.Colors.ACCENT);
             drawDivider(context, cx, preferencesRowY + 10);
 
             if (AccountState.hasAutoSync()) {
                 premiumLinkX = -1;
-                context.centeredText(font,
+                UIDraw.centeredText(context,
                         Component.literal("Favourited worlds sync automatically."),
-                        cx, preferencesRowY + 52, 0xFF888888);
+                        cx, preferencesRowY + 56, UITheme.Colors.TEXT_MUTED);
             } else {
                 String word = "Premium";
                 String rest = " adds auto sync and version history.";
                 int wordW = font.width(word);
                 int startX = cx - (wordW + font.width(rest)) / 2;
-                context.text(font, word, startX, preferencesRowY + 52, PREMIUM_ACCENT, false);
-                context.text(font, rest, startX + wordW, preferencesRowY + 52, 0xFF888888, false);
+                UIDraw.text(context, word, startX, preferencesRowY + 56, PREMIUM_ACCENT);
+                UIDraw.text(context, rest, startX + wordW, preferencesRowY + 56, UITheme.Colors.TEXT_MUTED);
                 premiumLinkX = startX;
-                premiumLinkY = preferencesRowY + 52;
+                premiumLinkY = preferencesRowY + 56;
                 premiumLinkW = wordW;
             }
 
-            context.centeredText(font, Component.literal("\u00a78Unlinking keeps your cloud saves."),
-                    cx, this.height - 24, 0xFFFFFFFF);
         } else if (isLinking) {
             if (!linkingStatus.isEmpty()) {
-                context.centeredText(font, Component.literal(linkingStatus),
-                        cx, accountRowY + 34, 0xFF88FF88);
+                UIDraw.centeredText(context, Component.literal(linkingStatus),
+                        cx, accountRowY + 34, UITheme.Colors.SUCCESS_TEXT);
             }
             if (pendingAuthUrl != null) {
-                context.centeredText(font,
+                UIDraw.centeredText(context,
                         Component.literal("Browser didn't open? Copy the URL and paste it manually."),
-                        cx, accountRowY + 108, 0xFF888888);
-                context.centeredText(font,
+                        cx, accountRowY + 108, UITheme.Colors.TEXT_MUTED);
+                UIDraw.centeredText(context,
                         Component.literal("Or paste your save key manually if the mod didn't receive it:"),
-                        cx, accountRowY + 122, 0xFF888888);
+                        cx, accountRowY + 122, UITheme.Colors.TEXT_MUTED);
             }
         } else {
-            context.centeredText(font, Component.literal("\u00a77Getting started"), cx, accountRowY, 0xFFFFFFFF);
+            UIDraw.centeredText(context, Component.literal("Getting started"), cx, accountRowY, UITheme.Colors.ACCENT);
             drawDivider(context, cx, accountRowY + 10);
 
-            context.centeredText(font,
+            UIDraw.centeredText(context,
                     Component.literal("Link this client to your Choculaterie account to sync your worlds."),
-                    cx, accountRowY + 22, 0xFFCCCCCC);
+                    cx, accountRowY + 22, UITheme.Colors.TEXT_PRIMARY);
 
             int stepY = accountRowY + 88;
             int lineH = 14;
-            context.centeredText(font,
+            UIDraw.centeredText(context,
                     Component.literal("1. A browser window will open. Sign in and click Approve."),
-                    cx, stepY, 0xFFCCCCCC);
+                    cx, stepY, UITheme.Colors.TEXT_PRIMARY);
             stepY += lineH;
-            context.centeredText(font,
+            UIDraw.centeredText(context,
                     Component.literal("2. The game briefly joins a server to verify your Minecraft account."),
-                    cx, stepY, 0xFFCCCCCC);
+                    cx, stepY, UITheme.Colors.TEXT_PRIMARY);
             stepY += lineH;
-            context.centeredText(font,
+            UIDraw.centeredText(context,
                     Component.literal("3. Once verified, you're ready to sync your saves."),
-                    cx, stepY, 0xFFCCCCCC);
+                    cx, stepY, UITheme.Colors.TEXT_PRIMARY);
         }
 
+        if (confirmPopup != null)
+            confirmPopup.extractRenderState(context, mouseX, mouseY, delta);
         toastManager.render(context, delta, mouseX, mouseY);
     }
 
     @Override
     public boolean mouseClicked(MouseButtonEvent click, boolean doubled) {
         if (toastManager.mouseClicked(click.x(), click.y())) return true;
+        if (confirmPopup != null)
+            return confirmPopup.mouseClicked(click.x(), click.y(), click.button());
         if (premiumLinkX >= 0
                 && click.x() >= premiumLinkX && click.x() <= premiumLinkX + premiumLinkW
                 && click.y() >= premiumLinkY - 2 && click.y() <= premiumLinkY + 11) {
+            UIDraw.playClick();
             openPremiumPage();
             return true;
         }
@@ -508,6 +569,10 @@ public class AccountLinkingScreen extends Screen {
 
     @Override
     public void onClose() {
+        if (confirmPopup != null) {
+            confirmPopup = null;
+            return;
+        }
         goBack();
     }
 

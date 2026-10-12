@@ -12,6 +12,7 @@ import java.io.FileWriter;
 public final class ConfigManager {
     private static final String CONFIG_FILE = "save-manager-settings.json";
     private static final String SYNC_INDICATOR_KEY = "showSyncIndicator";
+    private static final String SOLID_BACKGROUND_KEY = "solidBackground";
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private ConfigManager() {
@@ -65,6 +66,24 @@ public final class ConfigManager {
         try {
             JsonObject json = read();
             json.addProperty(SYNC_INDICATOR_KEY, enabled);
+            write(json);
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static boolean isSolidBackground() {
+        try {
+            JsonObject json = read();
+            return json.has(SOLID_BACKGROUND_KEY) && json.get(SOLID_BACKGROUND_KEY).getAsBoolean();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public static void setSolidBackground(boolean solid) {
+        try {
+            JsonObject json = read();
+            json.addProperty(SOLID_BACKGROUND_KEY, solid);
             write(json);
         } catch (Exception ignored) {
         }

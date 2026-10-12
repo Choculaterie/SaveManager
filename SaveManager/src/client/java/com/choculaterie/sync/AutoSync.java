@@ -88,6 +88,10 @@ public final class AutoSync {
         return true;
     }
 
+    public static boolean tryAcquireForManual() {
+        return TRANSFER.tryAcquire();
+    }
+
     public static void releaseManual() {
         TRANSFER.release();
     }
@@ -415,6 +419,7 @@ public final class AutoSync {
             WatchManager.updateLastKnown(folder, Minecraft.getInstance().gameDirectory.toPath()
                     .resolve("saves").resolve(folder));
             SaveManagerMod.LOGGER.info("[SM] sync '{}': COMMITTED version {}", folder, versionId);
+            com.choculaterie.gui.SaveManagerScreen.onCloudChanged();
         } catch (Throwable ex) {
             Throwable cause = ex instanceof java.util.concurrent.CompletionException && ex.getCause() != null
                     ? ex.getCause()
