@@ -150,7 +150,7 @@ public class SaveManagerScreen extends Screen {
         refreshBtn.setIcon(UIIcon.REFRESH);
         addBtn(this.width - margin - btnSize * 2 - 4, margin, btnSize, btnSize, "", b -> openSavesFolder()).setIcon(UIIcon.FOLDER);
         addBtn(this.width - margin - btnSize, margin, btnSize, btnSize, "",
-                b -> minecraft.gui.setScreen(new AccountLinkingScreen(this))).setIcon(UIIcon.GEAR);
+                b -> minecraft.gui.setScreen(new AccountLinkingScreen(this))).setIcon(UIIcon.SLIDERS);
 
         int totalW = this.width - 60;
         int panelW = (totalW - PANEL_GAP) / 2;

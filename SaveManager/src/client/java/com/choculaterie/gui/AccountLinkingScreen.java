@@ -76,7 +76,7 @@ public class AccountLinkingScreen extends Screen {
         linkBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, rowH,
                 Component.literal(hasKey ? "Unlink Account" : "Link Account"),
                 b -> handleLinkOrReset(hasKey));
-        linkBtn.setStyle(hasKey ? ButtonStyle.DANGER : ButtonStyle.PRIMARY).setIcon(hasKey ? UIIcon.CLOSE : UIIcon.GLOBE);
+        linkBtn.setStyle(hasKey ? ButtonStyle.DANGER : ButtonStyle.PRIMARY).setIcon(hasKey ? UIIcon.LOGOUT : UIIcon.GLOBE);
         addRenderableWidget(linkBtn);
 
         copyUrlBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, rowH,
