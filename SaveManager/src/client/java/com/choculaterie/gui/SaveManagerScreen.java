@@ -567,6 +567,16 @@ public class SaveManagerScreen extends Screen {
                     return;
                 }
 
+                String tooLarge = AutoSync.describe413(cause);
+                if (tooLarge != null) {
+                    SaveManagerMod.LOGGER.warn("[SM] manual: refused with 413 on '{}' - {}", worldName, cause.toString());
+                    runOnActive(sc -> {
+                        sc.localLoading = false;
+                        sc.toastManager.showError(tooLarge);
+                    });
+                    return;
+                }
+
                 String msg = extractErrorMessage(cause);
                 boolean versioned = isVersionedWorld(s.worldName);
                 if (versioned) {

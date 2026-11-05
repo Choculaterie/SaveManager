@@ -35,7 +35,6 @@ public final class AutoSync {
 
     private static final long DEBOUNCE_SECONDS = 5;
     private static final long RETRY_MINUTES = 2;
-    private static final Set<String> IGNORED = Set.of("session.lock");
 
     private static final Semaphore TRANSFER = new Semaphore(1, true);
     private static final Map<String, Boolean> DIRTY = new ConcurrentHashMap<>();
@@ -291,7 +290,7 @@ public final class AutoSync {
         List<Path> files = new ArrayList<>();
         try (Stream<Path> walk = Files.walk(worldDir)) {
             walk.filter(Files::isRegularFile)
-                    .filter(p -> !IGNORED.contains(p.getFileName().toString()))
+                    .filter(p -> !WorldManifest.isIgnored(p))
                     .forEach(files::add);
         }
 
@@ -441,14 +440,28 @@ public final class AutoSync {
             boolean terminal = msg.contains("401") || msg.contains("403") || msg.contains("413");
             SyncState.recordFailure(folder, terminal);
             SaveManagerMod.LOGGER.warn("[SM] sync '{}': FAILED{} - {}", folder, terminal ? " (terminal, will not retry)" : ", will retry with backoff", msg);
-            if (terminal)
-                notifyStopped(folder, msg.contains("413")
-                        ? "Not enough cloud storage"
-                        : "Cloud sync was refused");
+            if (terminal) {
+                String tooLarge = describe413(cause);
+                notifyStopped(folder, tooLarge != null ? tooLarge : "Cloud sync was refused");
+            }
         } finally {
             syncingWorld = null;
             TRANSFER.release();
         }
+    }
+
+    public static String describe413(Throwable cause) {
+        if (cause instanceof ApiException api && api.status() == 413) {
+            return "quota_exceeded".equals(api.field("error"))
+                    ? "Not enough cloud storage for this world"
+                    : "This world is too large to upload";
+        }
+        String msg = cause == null ? "" : cause.toString();
+        if (msg.contains("quota_exceeded"))
+            return "Not enough cloud storage for this world";
+        if (msg.contains(": 413") || msg.contains(" 413 "))
+            return "This world is too large to upload";
+        return null;
     }
 
     public static void markClean(String folder) {

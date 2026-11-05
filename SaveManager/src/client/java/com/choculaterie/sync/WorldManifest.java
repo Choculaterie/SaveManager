@@ -18,6 +18,11 @@ public final class WorldManifest {
 
     private static final List<String> IGNORED_NAMES = List.of("session.lock");
 
+    public static boolean isIgnored(Path file) {
+        String name = file.getFileName().toString();
+        return IGNORED_NAMES.contains(name) || name.startsWith("DistantHorizons.sqlite");
+    }
+
     public static final class Entry {
         public final String path;
         public final String sha256;
@@ -41,7 +46,7 @@ public final class WorldManifest {
         List<Path> files = new ArrayList<>();
         try (Stream<Path> walk = Files.walk(worldDir)) {
             walk.filter(Files::isRegularFile)
-                    .filter(p -> !IGNORED_NAMES.contains(p.getFileName().toString()))
+                    .filter(p -> !isIgnored(p))
                     .sorted(Comparator.comparing(Path::toString))
                     .forEach(files::add);
         }
@@ -94,7 +99,7 @@ public final class WorldManifest {
         List<Path> files = new ArrayList<>();
         try (Stream<Path> walk = Files.walk(root)) {
             walk.filter(Files::isRegularFile)
-                    .filter(p -> !IGNORED_NAMES.contains(p.getFileName().toString()))
+                    .filter(p -> !isIgnored(p))
                     .sorted(Comparator.comparing(Path::toString))
                     .forEach(files::add);
         }

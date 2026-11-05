@@ -22,11 +22,21 @@ public final class PackBuilder {
             total += e.size;
 
         for (WorldManifest.Entry e : entries) {
-            byte[] deflated = deflate(e);
-
             out.write(e.sha256.getBytes(StandardCharsets.US_ASCII));
-            out.write(longToLittleEndian(deflated.length));
-            out.write(deflated);
+
+            if (e.size > STORED_THRESHOLD) {
+                out.write(longToLittleEndian(storedLength(e.size)));
+                final long base = sent;
+                final long all = total;
+                writeStored(out, e, done -> {
+                    if (progress != null)
+                        progress.accept(base + done, all);
+                });
+            } else {
+                byte[] deflated = deflate(e);
+                out.write(longToLittleEndian(deflated.length));
+                out.write(deflated);
+            }
 
             sent += e.size;
             if (progress != null)
@@ -34,6 +44,39 @@ public final class PackBuilder {
         }
         out.flush();
         return sent;
+    }
+
+    private static final long STORED_THRESHOLD = 64L * 1024 * 1024;
+    private static final int STORED_BLOCK = 65_535;
+
+    static long storedLength(long size) {
+        long blocks = Math.max(1L, (size + STORED_BLOCK - 1) / STORED_BLOCK);
+        return size + blocks * 5L;
+    }
+
+    private static void writeStored(OutputStream out, WorldManifest.Entry entry, java.util.function.LongConsumer progress)
+            throws IOException {
+        byte[] block = new byte[STORED_BLOCK];
+        long left = entry.size;
+        long done = 0L;
+        try (InputStream in = Files.newInputStream(entry.source)) {
+            do {
+                int len = (int) Math.min(STORED_BLOCK, left);
+                int got = in.readNBytes(block, 0, len);
+                if (got != len)
+                    throw new IOException("\"" + entry.source.getFileName() + "\" changed while uploading");
+                left -= len;
+                out.write(left == 0 ? 1 : 0);
+                out.write(len & 0xFF);
+                out.write((len >>> 8) & 0xFF);
+                out.write(~len & 0xFF);
+                out.write((~len >>> 8) & 0xFF);
+                out.write(block, 0, len);
+                done += len;
+                if ((done & (16L * 1024 * 1024 - 1)) < len || left == 0)
+                    progress.accept(done);
+            } while (left > 0);
+        }
     }
 
     private static byte[] deflate(WorldManifest.Entry entry) throws IOException {
