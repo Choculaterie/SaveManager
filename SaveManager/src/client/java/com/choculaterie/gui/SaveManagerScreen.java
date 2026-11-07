@@ -869,6 +869,8 @@ public class SaveManagerScreen extends Screen {
                     }
                     throw swapFailed;
                 }
+                if (displaced != null)
+                    keepDistantHorizonsData(displaced, targetBase);
 
                 String folder = targetBase.getFileName().toString();
                 boolean hasCloudHead = s.headVersionId != null && !s.headVersionId.isEmpty();
@@ -1491,6 +1493,30 @@ public class SaveManagerScreen extends Screen {
         }
         SaveManagerMod.LOGGER.info("Zip: created temp archive at {} (world={})", zip, worldName);
         return zip;
+    }
+
+    private static void keepDistantHorizonsData(Path oldWorld, Path newWorld) {
+        List<Path> files = new ArrayList<>();
+        try (Stream<Path> walk = Files.walk(oldWorld)) {
+            walk.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().startsWith("DistantHorizons"))
+                    .forEach(files::add);
+        } catch (Exception e) {
+            SaveManagerMod.LOGGER.warn("[SM] download: could not look for Distant Horizons data - {}", e.toString());
+            return;
+        }
+        for (Path f : files) {
+            Path dest = newWorld.resolve(oldWorld.relativize(f).toString());
+            try {
+                if (Files.exists(dest))
+                    continue;
+                Files.createDirectories(dest.getParent());
+                Files.move(f, dest);
+                SaveManagerMod.LOGGER.info("[SM] download: kept {}", newWorld.relativize(dest));
+            } catch (Exception e) {
+                SaveManagerMod.LOGGER.warn("[SM] download: could not keep {} - {}", f.getFileName(), e.toString());
+            }
+        }
     }
 
     private static void deleteDirectoryRecursively(Path dir) throws Exception {
