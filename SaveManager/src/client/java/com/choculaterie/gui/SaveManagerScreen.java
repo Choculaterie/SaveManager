@@ -48,6 +48,8 @@ import static com.choculaterie.vanilib.util.FormatUtils.*;
 public class SaveManagerScreen extends Screen {
     private static final int ROW_HEIGHT = 25;
     private static final int PANEL_GAP = 20;
+    private static final int HEADER_BUTTON_GAP = 2;
+    private static final int BUTTON_GAP = 4;
     private static final int HEADER_Y = 50;
     private static final int LIST_GAP = 20;
     private static final int STAR_SLOT = 17;
@@ -146,9 +148,9 @@ public class SaveManagerScreen extends Screen {
         clearStaleTransferState();
         int btnSize = UITheme.Dimensions.BUTTON_HEIGHT, margin = UITheme.Dimensions.PADDING_SMALL + 1;
         addBtn(margin, margin, btnSize, btnSize, "", b -> closeScreen()).setIcon(UIIcon.ARROW_LEFT);
-        refreshBtn = addBtn(margin + btnSize + 4, margin, btnSize, btnSize, "", b -> refresh());
+        refreshBtn = addBtn(margin + btnSize + HEADER_BUTTON_GAP, margin, btnSize, btnSize, "", b -> refresh());
         refreshBtn.setIcon(UIIcon.REFRESH);
-        addBtn(this.width - margin - btnSize * 2 - 4, margin, btnSize, btnSize, "", b -> openSavesFolder()).setIcon(UIIcon.FOLDER);
+        addBtn(this.width - margin - btnSize * 2 - HEADER_BUTTON_GAP, margin, btnSize, btnSize, "", b -> openSavesFolder()).setIcon(UIIcon.FOLDER);
         addBtn(this.width - margin - btnSize, margin, btnSize, btnSize, "",
                 b -> minecraft.gui.setScreen(new AccountLinkingScreen(this))).setIcon(UIIcon.SLIDERS);
 
@@ -164,10 +166,10 @@ public class SaveManagerScreen extends Screen {
                 b -> { if (ACTIVE.isActive()) cancelTransfer(); else onUpload(); });
         uploadBtn.setIcon(UIIcon.UPLOAD).setStyle(ButtonStyle.PRIMARY);
 
-        downloadBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2, actionBtnY, btnW, btnH, "Download",
+        downloadBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - BUTTON_GAP) / 2, actionBtnY, btnW, btnH, "Download",
                 b -> { if (ACTIVE.isActive()) cancelTransfer(); else onDownload(); });
         downloadBtn.setIcon(UIIcon.DOWNLOAD).setStyle(ButtonStyle.PRIMARY);
-        deleteBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - 10) / 2 + btnW + 10, actionBtnY, btnW, btnH, "Delete",
+        deleteBtn = addBtn(cloudPanelX + (cloudPanelW - btnW * 2 - BUTTON_GAP) / 2 + btnW + BUTTON_GAP, actionBtnY, btnW, btnH, "Delete",
                 b -> onDelete());
         deleteBtn.setIcon(UIIcon.TRASH).setStyle(ButtonStyle.DANGER);
 

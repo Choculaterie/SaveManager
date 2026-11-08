@@ -7,6 +7,7 @@ public final class AccountState {
     private static volatile boolean known = false;
     private static volatile boolean premium = false;
     private static volatile String username = "";
+    private static volatile String profilePictureUrl = "";
     private static volatile boolean autoSync = false;
     private static volatile int versionsKept = 1;
     private static volatile String quotaFormatted = "";
@@ -22,6 +23,9 @@ public final class AccountState {
             premium = quotaInfo.has("premium") && quotaInfo.get("premium").getAsBoolean();
             username = quotaInfo.has("username") && !quotaInfo.get("username").isJsonNull()
                     ? quotaInfo.get("username").getAsString()
+                    : "";
+            profilePictureUrl = quotaInfo.has("profilePictureUrl") && !quotaInfo.get("profilePictureUrl").isJsonNull()
+                    ? quotaInfo.get("profilePictureUrl").getAsString()
                     : "";
             quotaFormatted = quotaInfo.has("quotaFormatted") ? quotaInfo.get("quotaFormatted").getAsString() : "";
             usedFormatted = quotaInfo.has("usedFormatted") ? quotaInfo.get("usedFormatted").getAsString() : "";
@@ -42,6 +46,7 @@ public final class AccountState {
         known = false;
         premium = false;
         username = "";
+        profilePictureUrl = "";
         autoSync = false;
         versionsKept = 1;
         quotaFormatted = "";
@@ -58,6 +63,10 @@ public final class AccountState {
 
     public static String username() {
         return username;
+    }
+
+    public static String profilePictureUrl() {
+        return profilePictureUrl;
     }
 
     public static boolean hasAutoSync() {

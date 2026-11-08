@@ -1,6 +1,7 @@
 package com.choculaterie.gui;
 
 import com.choculaterie.SaveManagerMod;
+import com.mojang.blaze3d.platform.InputConstants;
 import com.choculaterie.network.NetworkManager;
 import com.choculaterie.util.AccountState;
 import com.choculaterie.util.ConfigManager;
@@ -8,6 +9,7 @@ import com.choculaterie.vanilib.util.ScreenUtils;
 import com.choculaterie.vanilib.gui.theme.ButtonStyle;
 import com.choculaterie.vanilib.gui.theme.UIDraw;
 import com.choculaterie.vanilib.gui.theme.UIIcon;
+import com.choculaterie.vanilib.gui.widget.LoadingSpinner;
 import com.choculaterie.vanilib.gui.theme.UITheme;
 import com.choculaterie.vanilib.gui.widget.ConfirmPopup;
 import com.choculaterie.vanilib.gui.widget.CustomButton;
@@ -17,6 +19,7 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 
 import net.minecraft.client.input.MouseButtonEvent;
 
@@ -39,6 +42,8 @@ public class AccountLinkingScreen extends Screen {
     private String pendingAuthUrl = null;
     private ScheduledExecutorService pollExecutor = null;
     private static final int PREMIUM_ACCENT = 0xFFE879F9;
+    private static final int AVATAR_SIZE = 64;
+    private static final int AVATAR_GAP = 6;
 
     private int premiumLinkX = -1;
     private int premiumLinkY = -1;
@@ -46,6 +51,8 @@ public class AccountLinkingScreen extends Screen {
 
     private CustomButton linkBtn = null, indicatorBtn, backgroundBtn;
     private int accountRowY, preferencesRowY;
+    private int avatarSpace = 0;
+    private final LoadingSpinner avatarSpinner = new LoadingSpinner(0, 0);
     private CustomButton copyUrlBtn = null;
     private ConfirmPopup confirmPopup = null;
     private CustomTextField manualKeyField = null;
@@ -68,12 +75,13 @@ public class AccountLinkingScreen extends Screen {
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
         int cx = this.width / 2, btnW = 120;
-        int contentH = hasKey ? 174 : 132;
+        avatarSpace = hasKey ? AVATAR_SIZE + AVATAR_GAP : 0;
+        int contentH = hasKey ? 174 + avatarSpace : 132;
         accountRowY = Math.max(36, (this.height - contentH) / 2);
-        preferencesRowY = accountRowY + 108;
+        preferencesRowY = accountRowY + 108 + avatarSpace;
 
         int rowH = UITheme.Dimensions.BUTTON_HEIGHT;
-        linkBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, rowH,
+        linkBtn = new CustomButton(cx - btnW / 2, accountRowY + 52 + avatarSpace, btnW, rowH,
                 Component.literal(hasKey ? "Unlink Account" : "Link Account"),
                 b -> handleLinkOrReset(hasKey));
         linkBtn.setStyle(hasKey ? ButtonStyle.DANGER : ButtonStyle.PRIMARY).setIcon(hasKey ? UIIcon.LOGOUT : UIIcon.GLOBE);
@@ -139,6 +147,53 @@ public class AccountLinkingScreen extends Screen {
         ConfigManager.setSyncIndicatorEnabled(!ConfigManager.isSyncIndicatorEnabled());
         if (indicatorBtn != null)
             indicatorBtn.setMessage(Component.literal(indicatorLabel()));
+    }
+
+    private int avatarX() {
+        return this.width / 2 - AVATAR_SIZE / 2;
+    }
+
+    private int avatarY() {
+        return accountRowY + 18;
+    }
+
+    private boolean isOverAvatar(double x, double y) {
+        if (avatarSpace == 0 || isLinking || confirmPopup != null || AccountState.username().isBlank()) return false;
+        return x >= avatarX() && x < avatarX() + AVATAR_SIZE && y >= avatarY() && y < avatarY() + AVATAR_SIZE;
+    }
+
+    private void drawAvatar(GuiGraphicsExtractor context, String who, int mouseX, int mouseY) {
+        int x = avatarX(), y = avatarY();
+        int pixelSize = (int) Math.round(AVATAR_SIZE * this.minecraft.getWindow().getGuiScale());
+        Identifier picture = ProfilePicture.get(AccountState.profilePictureUrl(), pixelSize);
+        if (picture != null) {
+            context.blit(picture, x, y, x + AVATAR_SIZE, y + AVATAR_SIZE, 0.0f, 1.0f, 0.0f, 1.0f);
+        } else if (!AccountState.isKnown() || ProfilePicture.isLoading(AccountState.profilePictureUrl())) {
+            context.fill(x, y, x + AVATAR_SIZE, y + AVATAR_SIZE, UITheme.Colors.SURFACE);
+            avatarSpinner.setPosition(x + AVATAR_SIZE / 2 - avatarSpinner.getWidth() / 2, y + AVATAR_SIZE / 2 - avatarSpinner.getHeight() / 2);
+            avatarSpinner.extractRenderState(context, mouseX, mouseY, 0);
+        } else {
+            context.fill(x, y, x + AVATAR_SIZE, y + AVATAR_SIZE, UITheme.Colors.SURFACE);
+            String initial = who.isBlank() ? "?" : who.substring(0, 1).toUpperCase(java.util.Locale.ROOT);
+            UIDraw.centeredText(context, Component.literal(initial), x + AVATAR_SIZE / 2, y + AVATAR_SIZE / 2 - 4, UITheme.Colors.TEXT_MUTED);
+        }
+        UIDraw.outline(context, x - 1, y - 1, x + AVATAR_SIZE + 1, y + AVATAR_SIZE + 1, UITheme.Colors.OUTLINE);
+        if (isOverAvatar(mouseX, mouseY)) {
+            context.fill(x, y, x + AVATAR_SIZE, y + AVATAR_SIZE, 0x88000000);
+            UIIcon.PENCIL.drawCentered(context, x + AVATAR_SIZE / 2, y + AVATAR_SIZE / 2, UITheme.Colors.TEXT_HIGHLIGHT);
+        }
+    }
+
+    private void openProfilePicturePage() {
+        try {
+            String user = AccountState.username();
+            String url = "https://choculaterie.com/users/"
+                    + java.net.URLEncoder.encode(user, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20")
+                    + "?section=avatar";
+            com.mojang.blaze3d.Blaze3D.openUri(new java.net.URI(url));
+        } catch (Exception e) {
+            SaveManagerMod.LOGGER.warn("[SM] profile picture link: failed to open - {}", e.toString());
+        }
     }
 
     private void openPremiumPage() {
@@ -478,12 +533,13 @@ public class AccountLinkingScreen extends Screen {
             drawDivider(context, cx, accountRowY + 10);
 
             String who = AccountState.username().isBlank() ? "Linked" : AccountState.username();
-            UIDraw.centeredText(context, Component.literal(who), cx, accountRowY + 22, UITheme.Colors.SUCCESS_TEXT);
+            drawAvatar(context, who, mouseX, mouseY);
+            UIDraw.centeredText(context, Component.literal(who), cx, accountRowY + 22 + avatarSpace, UITheme.Colors.SUCCESS_TEXT);
 
             if (AccountState.isKnown()) {
                 String plan = AccountState.isPremium() ? "Premium" : "Free";
                 int planColor = AccountState.isPremium() ? UITheme.Palette.GOLD : UITheme.Colors.TEXT_MUTED;
-                UIDraw.centeredText(context, Component.literal(plan), cx, accountRowY + 36, planColor);
+                UIDraw.centeredText(context, Component.literal(plan), cx, accountRowY + 36 + avatarSpace, planColor);
             }
 
             UIDraw.centeredText(context, Component.literal("Preferences"), cx, preferencesRowY, UITheme.Colors.ACCENT);
@@ -552,6 +608,11 @@ public class AccountLinkingScreen extends Screen {
         if (toastManager.mouseClicked(click.x(), click.y())) return true;
         if (confirmPopup != null)
             return confirmPopup.mouseClicked(click.x(), click.y(), click.button());
+        if (click.button() == InputConstants.MOUSE_BUTTON_LEFT && isOverAvatar(click.x(), click.y())) {
+            UIDraw.playClick();
+            openProfilePicturePage();
+            return true;
+        }
         if (premiumLinkX >= 0
                 && click.x() >= premiumLinkX && click.x() <= premiumLinkX + premiumLinkW
                 && click.y() >= premiumLinkY - 2 && click.y() <= premiumLinkY + 11) {
