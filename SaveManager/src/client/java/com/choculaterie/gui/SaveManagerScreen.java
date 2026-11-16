@@ -54,6 +54,7 @@ public class SaveManagerScreen extends Screen {
     private static final int LIST_GAP = 20;
     private static final int STAR_SLOT = 17;
     private static final int ROW_LINE_GAP = 3;
+    private static final int PREMIUM_ACCENT = 0xFFE879F9;
     private final LoadingSpinner quotaSpinner = new LoadingSpinner(0, 0, 19);
     private final LoadingSpinner localSpinner = new LoadingSpinner(0, 0);
     private final LoadingSpinner cloudSpinner = new LoadingSpinner(0, 0);
@@ -81,6 +82,9 @@ public class SaveManagerScreen extends Screen {
     private String quotaFormatted = "Loading";
     private long quotaBytes = 5L * 1024L * 1024L * 1024L;
     private boolean quotaLoading = false;
+    private long serverUsedBytes = -1L;
+    private static final java.util.Map<String, Integer> LOCKED_VERSIONS = new java.util.concurrent.ConcurrentHashMap<>();
+    private int premiumHintX = -1, premiumHintY = -1, premiumHintW = 0;
     private static final TransferState ACTIVE = new TransferState();
     private static volatile SaveManagerScreen activeScreen = null;
     private String autoUploadWorld = null;
@@ -357,6 +361,8 @@ public class SaveManagerScreen extends Screen {
             try {
                 AccountState.update(json);
                 String quota = json.has("quotaFormatted") ? json.get("quotaFormatted").getAsString() : "5 GB";
+                if (json.has("usedBytes") && !json.get("usedBytes").isJsonNull())
+                    serverUsedBytes = json.get("usedBytes").getAsLong();
                 quotaFormatted = quota;
                 cachedQuotaFormatted = quota;
                 quotaBytes = parseQuotaBytes(quota);
@@ -1021,6 +1027,7 @@ public class SaveManagerScreen extends Screen {
             UIDraw.centeredText(ctx, java.util.Objects.requireNonNull(computeQuotaLine()), cx, titleY + 14,
                     UITheme.Colors.TEXT_MUTED);
         }
+        renderPremiumHint(ctx, cx, titleY + 26);
 
         UIDraw.sectionHeader(ctx, "Local Saves", localPanelX, HEADER_Y, localPanelX + localPanelW);
         UIDraw.sectionHeader(ctx, "Cloud Saves", cloudPanelX, HEADER_Y, cloudPanelX + cloudPanelW);
@@ -1240,6 +1247,13 @@ public class SaveManagerScreen extends Screen {
             return true;
         if (toastManager.isMouseOverToast(mx, my))
             return true;
+        if (click.button() == InputConstants.MOUSE_BUTTON_LEFT && premiumHintX >= 0
+                && mx >= premiumHintX && mx < premiumHintX + premiumHintW
+                && my >= premiumHintY - 1 && my < premiumHintY + 9) {
+            UIDraw.playClick();
+            openPremiumPage();
+            return true;
+        }
         if (super.mouseClicked(click, false))
             return true;
 
@@ -1261,6 +1275,7 @@ public class SaveManagerScreen extends Screen {
             idx = clickedRowIndex(mx, my, cloudPanelX, cloudPanelW, cloudScrollOffset, cloudSaves.size());
             if (idx >= 0) {
                 cloudSelectedIndex = idx;
+                requestLockedVersions(cloudSaves.get(idx));
                 localSelectedIndex = -1;
                 return true;
             }
@@ -1352,9 +1367,66 @@ public class SaveManagerScreen extends Screen {
     }
 
     private @org.checkerframework.checker.nullness.qual.NonNull String computeQuotaLine() {
-        long used = cloudSaves.stream().mapToLong(s -> Math.max(0L, s.fileSizeBytes)).sum();
+        long used = usedBytes();
         return formatBytes(used) + " of " + quotaFormatted + " (" + formatBytes(Math.max(0L, quotaBytes - used))
                 + " left)";
+    }
+
+    private long usedBytes() {
+        if (serverUsedBytes >= 0L)
+            return serverUsedBytes;
+        return cloudSaves.stream().mapToLong(s -> Math.max(0L, s.fileSizeBytes)).sum();
+    }
+
+    private void requestLockedVersions(CloudSave s) {
+        if (s == null || !s.versioned || AccountState.isPremium() || s.worldName == null)
+            return;
+        networkManager.syncVersions(s.worldName).whenComplete((arr, err) -> {
+            if (err != null || arr == null)
+                return;
+            int locked = 0;
+            for (com.google.gson.JsonElement e : arr) {
+                if (e != null && e.isJsonObject() && e.getAsJsonObject().has("locked")
+                        && e.getAsJsonObject().get("locked").getAsBoolean())
+                    locked++;
+            }
+            LOCKED_VERSIONS.put(s.worldName, locked);
+        });
+    }
+
+    private void renderPremiumHint(GuiGraphicsExtractor ctx, int cx, int y) {
+        premiumHintX = -1;
+        if (quotaLoading || AccountState.isPremium())
+            return;
+        String before = "", after;
+        CloudSave sel = cloudSelectedIndex >= 0 && cloudSelectedIndex < cloudSaves.size() ? cloudSaves.get(cloudSelectedIndex) : null;
+        Integer locked = sel != null ? LOCKED_VERSIONS.get(sel.worldName) : null;
+        if (locked != null && locked > 0) {
+            before = locked + (locked == 1 ? " older version" : " older versions") + " of this world "
+                    + (locked == 1 ? "is" : "are") + " saved. Restore " + (locked == 1 ? "it" : "them") + " with ";
+            after = ".";
+        } else if (quotaBytes > 0 && usedBytes() >= quotaBytes * 8 / 10) {
+            after = " gives you 15 GB of storage.";
+        } else {
+            return;
+        }
+        String word = "Premium";
+        int wBefore = font.width(before), wWord = font.width(word);
+        int startX = cx - (wBefore + wWord + font.width(after)) / 2;
+        UIDraw.text(ctx, before, startX, y, UITheme.Colors.TEXT_MUTED);
+        UIDraw.text(ctx, word, startX + wBefore, y, PREMIUM_ACCENT);
+        UIDraw.text(ctx, after, startX + wBefore + wWord, y, UITheme.Colors.TEXT_MUTED);
+        premiumHintX = startX + wBefore;
+        premiumHintY = y;
+        premiumHintW = wWord;
+    }
+
+    private static void openPremiumPage() {
+        try {
+            com.mojang.blaze3d.Blaze3D.openUri(new java.net.URI("https://choculaterie.com/premium"));
+        } catch (Exception e) {
+            SaveManagerMod.LOGGER.warn("[SM] premium link: failed to open - {}", e.toString());
+        }
     }
 
     private static long parseQuotaBytes(String formatted) {
