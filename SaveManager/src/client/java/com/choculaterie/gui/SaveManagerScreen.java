@@ -757,7 +757,7 @@ public class SaveManagerScreen extends Screen {
         beginDownload(s, savesDir, versionId);
     }
 
-    private static boolean isWorldLocked(Path worldDir) {
+    static boolean isWorldLocked(Path worldDir) {
         if (!Files.isDirectory(worldDir))
             return false;
         try {
@@ -836,57 +836,8 @@ public class SaveManagerScreen extends Screen {
             String baseName = sanitizeFolderName(s.worldName);
             if (baseName.isEmpty())
                 baseName = "world";
-            Path targetBase = savesDir.resolve(baseName);
-            Path stagedDir = null;
-            Path displaced = null;
             try {
-                Path work = savesDir.resolve(".savemanager-temp");
-                Files.createDirectories(work);
-                stagedDir = work.resolve(baseName + "-new-" + UUID.randomUUID());
-                Files.createDirectories(stagedDir);
-                unzipSmart(zipPath, stagedDir);
-
-                ACTIVE.abortIfCancelled();
-
-                Path worldRoot = locateWorldRoot(stagedDir);
-                if (worldRoot == null) {
-                    SaveManagerMod.LOGGER.warn("[SM] download: no level.dat under {} - extracted {}",
-                            stagedDir, describeTree(stagedDir));
-                    throw new IOException("That copy has no level.dat. Your save was left untouched.");
-                }
-                if (!worldRoot.equals(stagedDir)) {
-                    SaveManagerMod.LOGGER.info("[SM] download: archive was nested, using {}",
-                            stagedDir.relativize(worldRoot));
-                    Path lifted = stagedDir.getParent().resolve(stagedDir.getFileName() + "-root");
-                    Files.move(worldRoot, lifted, StandardCopyOption.ATOMIC_MOVE);
-                    deleteDirectoryRecursively(stagedDir);
-                    stagedDir = lifted;
-                }
-
-                if (Files.exists(targetBase)) {
-                    displaced = work.resolve(baseName + "-old-" + UUID.randomUUID());
-                    Files.move(targetBase, displaced, StandardCopyOption.ATOMIC_MOVE);
-                }
-                try {
-                    Files.move(stagedDir, targetBase, StandardCopyOption.ATOMIC_MOVE);
-                    stagedDir = null;
-                } catch (IOException swapFailed) {
-                    if (displaced != null && !Files.exists(targetBase)) {
-                        Files.move(displaced, targetBase, StandardCopyOption.ATOMIC_MOVE);
-                        displaced = null;
-                    }
-                    throw swapFailed;
-                }
-                if (displaced != null)
-                    keepDistantHorizonsData(displaced, targetBase);
-
-                String folder = targetBase.getFileName().toString();
-                boolean hasCloudHead = s.headVersionId != null && !s.headVersionId.isEmpty();
-                if (hasCloudHead || SyncState.isConflicted(folder) || SyncState.get(folder).headVersionId != null) {
-                    AutoSync.discardStaging(folder);
-                    SyncState.clearConflict(folder, hasCloudHead ? s.headVersionId : null);
-                }
-                WatchManager.updateLastKnown(folder, targetBase);
+                installWorldZip(zipPath, savesDir, baseName, s.headVersionId, ACTIVE::abortIfCancelled);
 
                 runOnActive(sc -> {
                     sc.toastManager.showSuccess(versionId == null
@@ -902,12 +853,6 @@ public class SaveManagerScreen extends Screen {
                 SaveManagerMod.LOGGER.warn("Unzip failed - {}", msg);
                 runOnActive(sc -> sc.toastManager.showError(msg));
             } finally {
-                if (stagedDir != null) {
-                    try { deleteDirectoryRecursively(stagedDir); } catch (Exception ignored) {}
-                }
-                if (displaced != null) {
-                    try { deleteDirectoryRecursively(displaced); } catch (Exception ignored) {}
-                }
                 try { Files.deleteIfExists(zipPath); } catch (Exception ignored) {}
                 try { Files.deleteIfExists(tmpDir); } catch (Exception ignored) {}
                 try { if (Files.exists(tmpDir)) deleteDirectoryRecursively(tmpDir); } catch (Exception ignored) {}
@@ -1649,6 +1594,70 @@ public class SaveManagerScreen extends Screen {
     }
 
     // ── Data classes ──
+
+    static Path installWorldZip(Path zipPath, Path savesDir, String baseName, String headVersionId,
+            Runnable abortCheck) throws Exception {
+        Path targetBase = savesDir.resolve(baseName);
+        Path stagedDir = null;
+        Path displaced = null;
+        try {
+            Path work = savesDir.resolve(".savemanager-temp");
+            Files.createDirectories(work);
+            stagedDir = work.resolve(baseName + "-new-" + UUID.randomUUID());
+            Files.createDirectories(stagedDir);
+            unzipSmart(zipPath, stagedDir);
+
+            abortCheck.run();
+
+            Path worldRoot = locateWorldRoot(stagedDir);
+            if (worldRoot == null) {
+                SaveManagerMod.LOGGER.warn("[SM] download: no level.dat under {} - extracted {}",
+                        stagedDir, describeTree(stagedDir));
+                throw new IOException("That copy has no level.dat. Your save was left untouched.");
+            }
+            if (!worldRoot.equals(stagedDir)) {
+                SaveManagerMod.LOGGER.info("[SM] download: archive was nested, using {}",
+                        stagedDir.relativize(worldRoot));
+                Path lifted = stagedDir.getParent().resolve(stagedDir.getFileName() + "-root");
+                Files.move(worldRoot, lifted, StandardCopyOption.ATOMIC_MOVE);
+                deleteDirectoryRecursively(stagedDir);
+                stagedDir = lifted;
+            }
+
+            if (Files.exists(targetBase)) {
+                displaced = work.resolve(baseName + "-old-" + UUID.randomUUID());
+                Files.move(targetBase, displaced, StandardCopyOption.ATOMIC_MOVE);
+            }
+            try {
+                Files.move(stagedDir, targetBase, StandardCopyOption.ATOMIC_MOVE);
+                stagedDir = null;
+            } catch (IOException swapFailed) {
+                if (displaced != null && !Files.exists(targetBase)) {
+                    Files.move(displaced, targetBase, StandardCopyOption.ATOMIC_MOVE);
+                    displaced = null;
+                }
+                throw swapFailed;
+            }
+            if (displaced != null)
+                keepDistantHorizonsData(displaced, targetBase);
+
+            String folder = targetBase.getFileName().toString();
+            boolean hasCloudHead = headVersionId != null && !headVersionId.isEmpty();
+            if (hasCloudHead || SyncState.isConflicted(folder) || SyncState.get(folder).headVersionId != null) {
+                AutoSync.discardStaging(folder);
+                SyncState.clearConflict(folder, hasCloudHead ? headVersionId : null);
+            }
+            WatchManager.updateLastKnown(folder, targetBase);
+            return targetBase;
+        } finally {
+            if (stagedDir != null) {
+                try { deleteDirectoryRecursively(stagedDir); } catch (Exception ignored) {}
+            }
+            if (displaced != null) {
+                try { deleteDirectoryRecursively(displaced); } catch (Exception ignored) {}
+            }
+        }
+    }
 
     static class LocalSave {
         final Path dir;

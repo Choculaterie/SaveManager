@@ -1,5 +1,6 @@
 package com.choculaterie.mixin;
 
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.client.gui.screens.worldselection.WorldSelectionList;
@@ -13,4 +14,7 @@ public interface SelectWorldScreenAccessor {
 
     @Accessor("lastScreen")
     Screen getParentScreen();
+
+    @Accessor("playWorldButton")
+    Button getPlayWorldButton();
 }

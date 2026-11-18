@@ -20,9 +20,11 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.SelectWorldScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
+import net.minecraft.util.FormattedCharSequence;
 
 import net.minecraft.client.input.MouseButtonEvent;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -42,7 +44,6 @@ public class AccountLinkingScreen extends Screen {
     private String pendingAuthUrl = null;
     private ScheduledExecutorService pollExecutor = null;
     private static final int PREMIUM_ACCENT = 0xFFE879F9;
-    private static final int AVATAR_SIZE = 64;
     private static final int AVATAR_GAP = 6;
 
     private int premiumLinkX = -1;
@@ -52,6 +53,9 @@ public class AccountLinkingScreen extends Screen {
     private CustomButton linkBtn = null, indicatorBtn, backgroundBtn;
     private int accountRowY, preferencesRowY;
     private int avatarSpace = 0;
+    private int avatarSize = 64;
+    private int contentW = 320;
+    private int linkRowY, stepsY, hintY, prefButtonsY, noteY;
     private final LoadingSpinner avatarSpinner = new LoadingSpinner(0, 0);
     private CustomButton copyUrlBtn = null;
     private ConfirmPopup confirmPopup = null;
@@ -75,46 +79,89 @@ public class AccountLinkingScreen extends Screen {
         boolean hasKey = apiKey != null && !apiKey.isBlank();
 
         int cx = this.width / 2, btnW = 120;
-        avatarSpace = hasKey ? AVATAR_SIZE + AVATAR_GAP : 0;
-        int contentH = hasKey ? 174 + avatarSpace : 132;
-        accountRowY = Math.max(36, (this.height - contentH) / 2);
-        preferencesRowY = accountRowY + 108 + avatarSpace;
+        int rowH = UITheme.Dimensions.BUTTON_HEIGHT, gap = UITheme.Dimensions.BUTTON_GAP;
+        contentW = Math.max(120, Math.min(320, this.width - UITheme.Dimensions.PADDING * 4));
+        int top = margin + btnSize + UITheme.Dimensions.PADDING;
 
-        int rowH = UITheme.Dimensions.BUTTON_HEIGHT;
-        linkBtn = new CustomButton(cx - btnW / 2, accountRowY + 52 + avatarSpace, btnW, rowH,
+        int prefW = Math.max(font.width("Sync message: Off"), font.width("Background: Transparent")) + 16;
+        boolean prefStacked = prefW * 2 + gap > this.width - UITheme.Dimensions.PADDING * 2;
+
+        int contentH;
+        if (hasKey) {
+            int prefRows = prefStacked ? rowH * 2 + gap : rowH;
+            int fixedH = 52 + rowH + 22 + prefRows + 14 + lineCount(noteText()) * LINE_H;
+            int avail = this.height - top - UITheme.Dimensions.PADDING;
+            avatarSize = 0;
+            for (int size : new int[] { 64, 48, 32 }) {
+                if (fixedH + size + AVATAR_GAP + 12 <= avail) {
+                    avatarSize = size;
+                    break;
+                }
+            }
+            avatarSpace = avatarSize > 0 ? avatarSize + AVATAR_GAP : 0;
+            int sectionGap = Math.max(12, Math.min(36, avail - fixedH - avatarSpace));
+            int prefTitle = 52 + avatarSpace + rowH + sectionGap;
+            int note = prefTitle + 22 + prefRows + 14;
+            contentH = note + lineCount(noteText()) * LINE_H;
+            accountRowY = Math.max(top, (this.height - contentH) / 2);
+            linkRowY = accountRowY + 52 + avatarSpace;
+            preferencesRowY = accountRowY + prefTitle;
+            prefButtonsY = preferencesRowY + 22;
+            noteY = accountRowY + note;
+        } else {
+            avatarSize = 0;
+            avatarSpace = 0;
+            int link = 22 + lineCount(INTRO) * LINE_H + 20;
+            int steps = link + rowH + 16;
+            int stepsH = 0;
+            for (String step : STEPS)
+                stepsH += lineCount(step) * LINE_H + 4;
+            int hints = link + 56;
+            int hintsH = (lineCount(HINT_URL) + lineCount(HINT_KEY)) * LINE_H + 4;
+            contentH = Math.max(steps + stepsH, hints + hintsH);
+            accountRowY = Math.max(top, (this.height - contentH) / 2);
+            linkRowY = accountRowY + link;
+            stepsY = accountRowY + steps;
+            hintY = accountRowY + hints;
+        }
+
+        linkBtn = new CustomButton(cx - btnW / 2, linkRowY, btnW, rowH,
                 Component.literal(hasKey ? "Unlink Account" : "Link Account"),
                 b -> handleLinkOrReset(hasKey));
         linkBtn.setStyle(hasKey ? ButtonStyle.DANGER : ButtonStyle.PRIMARY).setIcon(hasKey ? UIIcon.LOGOUT : UIIcon.GLOBE);
         addRenderableWidget(linkBtn);
 
-        copyUrlBtn = new CustomButton(cx - btnW / 2, accountRowY + 52, btnW, rowH,
+        copyUrlBtn = new CustomButton(cx - btnW / 2, linkRowY, btnW, rowH,
                 Component.literal("Copy URL"), b -> copyAuthUrl());
         copyUrlBtn.setIcon(UIIcon.CLIPBOARD);
         copyUrlBtn.visible = false;
         addRenderableWidget(copyUrlBtn);
 
-        int fieldW = Math.min(240, this.width - 80), applyW = 58;
-        int fieldX = cx - (fieldW + applyW + 4) / 2;
-        manualKeyField = new CustomTextField(minecraft, fieldX, accountRowY + 80, fieldW, rowH, Component.empty());
+        int applyW = 58;
+        int fieldW = Math.max(80, Math.min(240, this.width - UITheme.Dimensions.PADDING * 4 - applyW - gap));
+        int fieldX = cx - (fieldW + applyW + gap) / 2;
+        manualKeyField = new CustomTextField(minecraft, fieldX, linkRowY + 28, fieldW, rowH, Component.empty());
         manualKeyField.setPlaceholder(Component.literal("Paste save key here..."));
         manualKeyField.setMaxLength(128);
         manualKeyField.setOnEnterPressed(this::applyManualKey);
         manualKeyField.visible = false;
         addRenderableWidget(manualKeyField);
 
-        applyKeyBtn = new CustomButton(fieldX + fieldW + 4, accountRowY + 80, applyW, rowH,
+        applyKeyBtn = new CustomButton(fieldX + fieldW + gap, linkRowY + 28, applyW, rowH,
                 Component.literal("Apply"), b -> applyManualKey());
         applyKeyBtn.setIcon(UIIcon.CHECK).setStyle(ButtonStyle.PRIMARY);
         applyKeyBtn.visible = false;
         addRenderableWidget(applyKeyBtn);
 
-        int prefW = Math.max(font.width("Sync message: Off"), font.width("Background: Transparent")) + 16;
-        indicatorBtn = new CustomButton(cx - prefW - 2, preferencesRowY + 22, prefW, rowH,
+        int indicatorX = prefStacked ? cx - prefW / 2 : cx - prefW - gap / 2;
+        int backgroundX = prefStacked ? cx - prefW / 2 : cx + gap - gap / 2;
+        int backgroundY = prefStacked ? prefButtonsY + rowH + gap : prefButtonsY;
+        indicatorBtn = new CustomButton(indicatorX, prefButtonsY, prefW, rowH,
                 Component.literal(indicatorLabel()), b -> toggleSyncIndicator());
         indicatorBtn.visible = hasKey;
         addRenderableWidget(indicatorBtn);
 
-        backgroundBtn = new CustomButton(cx + 2, preferencesRowY + 22, prefW, rowH,
+        backgroundBtn = new CustomButton(backgroundX, backgroundY, prefW, rowH,
                 Component.literal(backgroundLabel()), b -> toggleBackground());
         backgroundBtn.visible = hasKey;
         addRenderableWidget(backgroundBtn);
@@ -125,8 +172,41 @@ public class AccountLinkingScreen extends Screen {
         }
     }
 
+    private static final int LINE_H = 10;
+    private static final String INTRO = "Link this client to your Choculaterie account to sync your worlds.";
+    private static final String[] STEPS = {
+            "1. A browser window will open. Sign in and click Approve.",
+            "2. The game briefly joins a server to verify your Minecraft account.",
+            "3. Once verified, you're ready to sync your saves." };
+    private static final String HINT_URL = "Browser didn't open? Copy the URL and paste it manually.";
+    private static final String HINT_KEY = "Or paste your save key manually if the mod didn't receive it:";
+    private static final String PREMIUM_WORD = "Premium";
+
+    private static String noteText() {
+        return AccountState.hasAutoSync()
+                ? "Favourited worlds sync automatically."
+                : PREMIUM_WORD + " adds auto sync and version history.";
+    }
+
+    private List<FormattedCharSequence> wrap(String text) {
+        return font.split(Component.literal(text), contentW);
+    }
+
+    private int lineCount(String text) {
+        return Math.max(1, wrap(text).size());
+    }
+
+    private int wrappedText(GuiGraphicsExtractor context, String text, int cx, int y, int color) {
+        List<FormattedCharSequence> lines = wrap(text);
+        for (FormattedCharSequence line : lines) {
+            UIDraw.text(context, line, cx - font.width(line) / 2, y, color);
+            y += LINE_H;
+        }
+        return lines.size() * LINE_H;
+    }
+
     private void drawDivider(GuiGraphicsExtractor context, int cx, int y) {
-        int half = Math.min(150, this.width / 2 - 20);
+        int half = Math.min(150, contentW / 2);
         UIDraw.hDivider(context, cx - half, cx + half, y, UITheme.Colors.DIVIDER_LIGHT);
     }
 
@@ -150,7 +230,7 @@ public class AccountLinkingScreen extends Screen {
     }
 
     private int avatarX() {
-        return this.width / 2 - AVATAR_SIZE / 2;
+        return this.width / 2 - avatarSize / 2;
     }
 
     private int avatarY() {
@@ -158,29 +238,29 @@ public class AccountLinkingScreen extends Screen {
     }
 
     private boolean isOverAvatar(double x, double y) {
-        if (avatarSpace == 0 || isLinking || confirmPopup != null || AccountState.username().isBlank()) return false;
-        return x >= avatarX() && x < avatarX() + AVATAR_SIZE && y >= avatarY() && y < avatarY() + AVATAR_SIZE;
+        if (avatarSize == 0 || isLinking || confirmPopup != null || AccountState.username().isBlank()) return false;
+        return x >= avatarX() && x < avatarX() + avatarSize && y >= avatarY() && y < avatarY() + avatarSize;
     }
 
     private void drawAvatar(GuiGraphicsExtractor context, String who, int mouseX, int mouseY) {
         int x = avatarX(), y = avatarY();
-        int pixelSize = (int) Math.round(AVATAR_SIZE * this.minecraft.getWindow().getGuiScale());
+        int pixelSize = (int) Math.round(avatarSize * this.minecraft.getWindow().getGuiScale());
         Identifier picture = ProfilePicture.get(AccountState.profilePictureUrl(), pixelSize);
         if (picture != null) {
-            context.blit(picture, x, y, x + AVATAR_SIZE, y + AVATAR_SIZE, 0.0f, 1.0f, 0.0f, 1.0f);
+            context.blit(picture, x, y, x + avatarSize, y + avatarSize, 0.0f, 1.0f, 0.0f, 1.0f);
         } else if (!AccountState.isKnown() || ProfilePicture.isLoading(AccountState.profilePictureUrl())) {
-            context.fill(x, y, x + AVATAR_SIZE, y + AVATAR_SIZE, UITheme.Colors.SURFACE);
-            avatarSpinner.setPosition(x + AVATAR_SIZE / 2 - avatarSpinner.getWidth() / 2, y + AVATAR_SIZE / 2 - avatarSpinner.getHeight() / 2);
+            context.fill(x, y, x + avatarSize, y + avatarSize, UITheme.Colors.SURFACE);
+            avatarSpinner.setPosition(x + avatarSize / 2 - avatarSpinner.getWidth() / 2, y + avatarSize / 2 - avatarSpinner.getHeight() / 2);
             avatarSpinner.extractRenderState(context, mouseX, mouseY, 0);
         } else {
-            context.fill(x, y, x + AVATAR_SIZE, y + AVATAR_SIZE, UITheme.Colors.SURFACE);
+            context.fill(x, y, x + avatarSize, y + avatarSize, UITheme.Colors.SURFACE);
             String initial = who.isBlank() ? "?" : who.substring(0, 1).toUpperCase(java.util.Locale.ROOT);
-            UIDraw.centeredText(context, Component.literal(initial), x + AVATAR_SIZE / 2, y + AVATAR_SIZE / 2 - 4, UITheme.Colors.TEXT_MUTED);
+            UIDraw.centeredText(context, Component.literal(initial), x + avatarSize / 2, y + avatarSize / 2 - 4, UITheme.Colors.TEXT_MUTED);
         }
-        UIDraw.outline(context, x - 1, y - 1, x + AVATAR_SIZE + 1, y + AVATAR_SIZE + 1, UITheme.Colors.OUTLINE);
+        UIDraw.outline(context, x - 1, y - 1, x + avatarSize + 1, y + avatarSize + 1, UITheme.Colors.OUTLINE);
         if (isOverAvatar(mouseX, mouseY)) {
-            context.fill(x, y, x + AVATAR_SIZE, y + AVATAR_SIZE, 0x88000000);
-            UIIcon.PENCIL.drawCentered(context, x + AVATAR_SIZE / 2, y + AVATAR_SIZE / 2, UITheme.Colors.TEXT_HIGHLIGHT);
+            context.fill(x, y, x + avatarSize, y + avatarSize, 0x88000000);
+            UIIcon.PENCIL.drawCentered(context, x + avatarSize / 2, y + avatarSize / 2, UITheme.Colors.TEXT_HIGHLIGHT);
         }
     }
 
@@ -533,7 +613,8 @@ public class AccountLinkingScreen extends Screen {
             drawDivider(context, cx, accountRowY + 10);
 
             String who = AccountState.username().isBlank() ? "Linked" : AccountState.username();
-            drawAvatar(context, who, mouseX, mouseY);
+            if (avatarSize > 0)
+                drawAvatar(context, who, mouseX, mouseY);
             UIDraw.centeredText(context, Component.literal(who), cx, accountRowY + 22 + avatarSpace, UITheme.Colors.SUCCESS_TEXT);
 
             if (AccountState.isKnown()) {
@@ -547,55 +628,41 @@ public class AccountLinkingScreen extends Screen {
 
             if (AccountState.hasAutoSync()) {
                 premiumLinkX = -1;
-                UIDraw.centeredText(context,
-                        Component.literal("Favourited worlds sync automatically."),
-                        cx, preferencesRowY + 56, UITheme.Colors.TEXT_MUTED);
+                wrappedText(context, noteText(), cx, noteY, UITheme.Colors.TEXT_MUTED);
             } else {
-                String word = "Premium";
-                String rest = " adds auto sync and version history.";
-                int wordW = font.width(word);
-                int startX = cx - (wordW + font.width(rest)) / 2;
-                UIDraw.text(context, word, startX, preferencesRowY + 56, PREMIUM_ACCENT);
-                UIDraw.text(context, rest, startX + wordW, preferencesRowY + 56, UITheme.Colors.TEXT_MUTED);
-                premiumLinkX = startX;
-                premiumLinkY = preferencesRowY + 56;
-                premiumLinkW = wordW;
+                List<FormattedCharSequence> lines = wrap(noteText());
+                int y = noteY;
+                for (int i = 0; i < lines.size(); i++) {
+                    FormattedCharSequence line = lines.get(i);
+                    int startX = cx - font.width(line) / 2;
+                    UIDraw.text(context, line, startX, y, UITheme.Colors.TEXT_MUTED);
+                    if (i == 0) {
+                        UIDraw.text(context, PREMIUM_WORD, startX, y, PREMIUM_ACCENT);
+                        premiumLinkX = startX;
+                        premiumLinkY = y;
+                        premiumLinkW = font.width(PREMIUM_WORD);
+                    }
+                    y += LINE_H;
+                }
             }
 
         } else if (isLinking) {
             if (!linkingStatus.isEmpty()) {
-                UIDraw.centeredText(context, Component.literal(linkingStatus),
-                        cx, accountRowY + 34, UITheme.Colors.SUCCESS_TEXT);
+                wrappedText(context, linkingStatus, cx, linkRowY - 18, UITheme.Colors.SUCCESS_TEXT);
             }
             if (pendingAuthUrl != null) {
-                UIDraw.centeredText(context,
-                        Component.literal("Browser didn't open? Copy the URL and paste it manually."),
-                        cx, accountRowY + 108, UITheme.Colors.TEXT_MUTED);
-                UIDraw.centeredText(context,
-                        Component.literal("Or paste your save key manually if the mod didn't receive it:"),
-                        cx, accountRowY + 122, UITheme.Colors.TEXT_MUTED);
+                int y = hintY + wrappedText(context, HINT_URL, cx, hintY, UITheme.Colors.TEXT_MUTED) + 4;
+                wrappedText(context, HINT_KEY, cx, y, UITheme.Colors.TEXT_MUTED);
             }
         } else {
             UIDraw.centeredText(context, Component.literal("Getting started"), cx, accountRowY, UITheme.Colors.ACCENT);
             drawDivider(context, cx, accountRowY + 10);
 
-            UIDraw.centeredText(context,
-                    Component.literal("Link this client to your Choculaterie account to sync your worlds."),
-                    cx, accountRowY + 22, UITheme.Colors.TEXT_PRIMARY);
+            wrappedText(context, INTRO, cx, accountRowY + 22, UITheme.Colors.TEXT_PRIMARY);
 
-            int stepY = accountRowY + 88;
-            int lineH = 14;
-            UIDraw.centeredText(context,
-                    Component.literal("1. A browser window will open. Sign in and click Approve."),
-                    cx, stepY, UITheme.Colors.TEXT_PRIMARY);
-            stepY += lineH;
-            UIDraw.centeredText(context,
-                    Component.literal("2. The game briefly joins a server to verify your Minecraft account."),
-                    cx, stepY, UITheme.Colors.TEXT_PRIMARY);
-            stepY += lineH;
-            UIDraw.centeredText(context,
-                    Component.literal("3. Once verified, you're ready to sync your saves."),
-                    cx, stepY, UITheme.Colors.TEXT_PRIMARY);
+            int stepY = stepsY;
+            for (String step : STEPS)
+                stepY += wrappedText(context, step, cx, stepY, UITheme.Colors.TEXT_PRIMARY) + 4;
         }
 
         if (confirmPopup != null)

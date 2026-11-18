@@ -26,6 +26,7 @@ public final class SyncState {
         public long failureCount;
         public long nextAttemptAtMs;
         public boolean conflicted;
+        public boolean pending;
         public String remoteHeadVersionId;
         public Map<String, String> fileStamps = new HashMap<>();
         public Map<String, String> hashCache = new HashMap<>();
@@ -166,6 +167,7 @@ public final class SyncState {
         e.conflicted = false;
         e.remoteHeadVersionId = null;
         e.headVersionId = acceptedHead;
+        e.pending = false;
         e.failureCount = 0;
         e.nextAttemptAtMs = 0;
         save();
@@ -179,6 +181,7 @@ public final class SyncState {
         WorldEntry e = get(worldFolder);
         e.headVersionId = headVersionId;
         e.conflicted = false;
+        e.pending = false;
         e.remoteHeadVersionId = null;
         e.lastSyncedAtMs = System.currentTimeMillis();
         e.failureCount = 0;

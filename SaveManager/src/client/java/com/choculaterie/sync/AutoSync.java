@@ -147,6 +147,7 @@ public final class AutoSync {
             long ms = (System.nanoTime() - started) / 1_000_000;
             if (copied > 0) {
                 DIRTY.put(folder, Boolean.TRUE);
+                entry.pending = true;
                 SyncState.save();
                 SaveManagerMod.LOGGER.info("[SM] autosave: staged {} changed file(s) for '{}' in {}ms, syncing in {}s",
                         copied, folder, ms, DEBOUNCE_SECONDS);
@@ -180,6 +181,8 @@ public final class AutoSync {
                 SaveManagerMod.LOGGER.info("[SM] world-exit: staged {} file(s) for '{}' in {}ms",
                         copied, folder, (System.nanoTime() - t0) / 1_000_000);
                 entry.stagingPopulated = true;
+                if (copied > 0)
+                    entry.pending = true;
                 SyncState.save();
                 DIRTY.put(folder, Boolean.TRUE);
                 SyncState.clearBackoff(folder);

@@ -8,7 +8,9 @@
     "WorldEntryAccessor",
     "SelectWorldScreenAccessor",
     "EntryListWidgetAccessor",
-    "MinecraftServerMixin"
+    "MinecraftServerMixin",
+    "WorldOpenFlowsMixin",
+    "CreateWorldScreenMixin"
   ],
   "client": [],
   "injectors": {
